@@ -1,0 +1,58 @@
+site_name: model_eval
+site_description: 
+
+repo_url: https://github.com/mullenkamp/model_eval
+repo_name: mullenkamp/model_eval
+
+theme:
+    name: material
+    icon:
+        logo: material/library
+    palette:
+        # Palette toggle for light mode
+        - media: "(prefers-color-scheme: light)"
+          scheme: default
+          primary: amber
+          accent: cyan
+          toggle:
+            icon: material/brightness-7
+            name: Switch to dark mode
+
+        # Palette toggle for dark mode
+        - media: "(prefers-color-scheme: dark)"
+          scheme: slate
+          primary: amber
+          accent: cyan
+          toggle:
+            icon: material/brightness-4
+            name: Switch to light mode
+
+markdown_extensions:
+    - toc:
+        permalink: true
+    - pymdownx.highlight:
+        anchor_linenums: true
+    - pymdownx.tasklist:
+        custom_checkbox: true
+    - pymdownx.inlinehilite
+    - pymdownx.snippets
+    - pymdownx.superfences
+
+plugins:
+    - search
+    - mkdocstrings:
+        handlers:
+            python:
+                import:
+                    - https://docs.python.org/3.11/objects.inv
+                options:
+                    docstring_style: google
+
+watch:
+    - docs
+    - model_eval
+
+nav:
+    - About: index.md
+    - Reference:
+        - model_eval: reference/model_eval.md
