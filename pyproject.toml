@@ -12,9 +12,9 @@ classifiers = [
 requires-python = ">=3.11"
 dependencies = [
   'h5py',
-  'rechunkit',
+  'rechunkit>=0.2.1',
   'numpy>2',
-  
+
 ]
 
 [build-system]
