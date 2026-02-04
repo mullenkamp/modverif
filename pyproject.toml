@@ -11,7 +11,15 @@ classifiers = [
 ]
 requires-python = ">=3.11"
 dependencies = [
+  'h5py',
+  'rechunkit',
+  'numpy>2',
+  
 ]
+
+[build-system]
+requires = ["hatchling>=1.26.1"]
+build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
@@ -167,10 +175,6 @@ exclude_lines = [
   "if __name__ == .__main__.:",
   "if TYPE_CHECKING:",
 ]
-
-[build-system]
-requires = ["hatchling>=1.26.1"]
-build-backend = "hatchling.build"
 
 [project.urls]
 Documentation = "https://mullenkamp.github.io/model_eval/"
