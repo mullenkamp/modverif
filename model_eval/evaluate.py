@@ -317,6 +317,52 @@ def _attach_dimension_scales(dataset: h5py.Dataset, dim_datasets: list[h5py.Data
         dataset.dims[i].attach_scale(dim_ds)
 
 
+def _get_wrf_proj4(attrs: h5py.AttributeManager) -> str:
+    """
+    Construct a PROJ4 string from WRF global attributes.
+
+    Parameters
+    ----------
+    attrs : h5py.AttributeManager
+        Attributes from a WRF output file.
+
+    Returns
+    -------
+    str
+        PROJ4 string or None if projection unknown.
+    """
+    map_proj = attrs.get('MAP_PROJ')
+    if map_proj is None:
+        return None
+
+    # Common WRF sphere radius
+    r = attrs.get('EARTH_RADIUS', 6370000.0)
+    proj_base = f"+a={r} +b={r} +no_defs"
+
+    if map_proj == 1:  # Lambert Conformal
+        truelat1 = attrs.get('TRUELAT1')[0]
+        truelat2 = attrs.get('TRUELAT2')[0]
+        stand_lon = attrs.get('STAND_LON')[0]
+        moad_cen_lat = attrs.get('MOAD_CEN_LAT')[0]
+        return f"+proj=lcc +lat_1={truelat1} +lat_2={truelat2} +lat_0={moad_cen_lat} +lon_0={stand_lon} {proj_base}"
+    elif map_proj == 2:  # Polar Stereographic
+        truelat1 = attrs.get('TRUELAT1')[0]
+        stand_lon = attrs.get('STAND_LON')[0]
+        # lat_ts is where the scale is 1. WRF uses truelat1.
+        return f"+proj=stere +lat_ts={truelat1} +lat_0=90 +lon_0={stand_lon} +k=1 +x_0=0 +y_0=0 {proj_base}"
+    elif map_proj == 3:  # Mercator
+        truelat1 = attrs.get('TRUELAT1')[0]
+        stand_lon = attrs.get('STAND_LON')[0]
+        return f"+proj=merc +lat_ts={truelat1} +lon_0={stand_lon} +x_0=0 +y_0=0 {proj_base}"
+    elif map_proj == 6:  # Cylindrical Equidistant
+        # Also known as lat/lon or plate carree
+        stand_lon = attrs.get('STAND_LON')[0]
+        moad_cen_lat = attrs.get('MOAD_CEN_LAT')[0]
+        return f"+proj=longlat +lon_0={stand_lon} +lat_0={moad_cen_lat} {proj_base}"
+
+    return None
+
+
 def evaluate_models(
     source_folder: Union[str, pathlib.Path],
     test_folder: Union[str, pathlib.Path],
@@ -429,12 +475,15 @@ def evaluate_models(
     # Create output directory if needed
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Scan all files to get shape info and total timesteps
-    # (files may have different numbers of timesteps)
+    # Scan all files to get shape info, total timesteps, and coordinate data
     n_times = 0
-    # times = []
     n_y = None
     n_x = None
+    dx = None
+    dy = None
+    proj4 = None
+    all_times = []
+
     for run_date in common_dates:
         source_file = source_files[run_date]
         test_file = test_files[run_date]
@@ -453,15 +502,38 @@ def evaluate_models(
             if n_y is None:
                 n_y = ref_var.shape[1]
                 n_x = ref_var.shape[2]
+                # Get grid spacing and projection from global attributes
+                dx = h5s.attrs.get('DX')
+                dy = h5s.attrs.get('DY')
+                proj4 = _get_wrf_proj4(h5s.attrs)
 
             # Use minimum timesteps from source and test for this date
-            n_times += min(ref_var.shape[0], test_var.shape[0])
+            file_n_times = min(ref_var.shape[0], test_var.shape[0])
+            n_times += file_n_times
 
-            # time_ref_var = h5s['Time']
+            # Collect times from source file
+            if 'Times' in h5s:
+                times_data = h5s['Times'][:file_n_times]
+                for t_row in times_data:
+                    # WRF Times are typically (Time, 19) char arrays or (Time,) string arrays
+                    if isinstance(t_row, (bytes, str)):
+                        t_str = t_row.decode('utf-8') if isinstance(t_row, bytes) else t_row
+                    else:
+                        t_str = b"".join(t_row).decode('utf-8')
 
-            # _, dtype, _, origin_date = parse_cf_dates(time_ref_var.attrs['units'].astype(str), 'int64')
-            # time1 = (time_ref_var[:] + origin_date.astype(int)).astype(dtype)
-            # times.append(time1)
+                    t_str = t_str.replace('_', 'T')
+                    try:
+                        dt = np.datetime64(t_str)
+                        # Convert to days since 1970-01-01
+                        days = (dt - np.datetime64('1970-01-01')) / np.timedelta64(1, 'D')
+                        all_times.append(days)
+                    except ValueError:
+                        # Fallback for malformed date strings
+                        all_times.append(np.nan)
+
+    time_values = np.array(all_times, dtype='f8') if all_times else None
+    x_values = (np.arange(n_x) * dx).astype('f4') if dx is not None else None
+    y_values = (np.arange(n_y) * dy).astype('f4') if dy is not None else None
 
     with h5py.File(output_path, 'w') as h5out:
         # Set NetCDF4 conventions
@@ -470,18 +542,20 @@ def evaluate_models(
         h5out.attrs['source_folder'] = np.bytes_(str(source_folder))
         h5out.attrs['test_folder'] = np.bytes_(str(test_folder))
         h5out.attrs['domain'] = domain
+        if proj4:
+            h5out.attrs['proj4'] = np.bytes_(proj4)
 
         # Create dimensions as NetCDF4 dimension scales
-        time_ds = _make_netcdf4_dimension(h5out, 'time', n_times)
+        time_ds = _make_netcdf4_dimension(h5out, 'time', n_times, data=time_values)
         time_ds.attrs['units'] = np.bytes_('days since 1970-01-01')
         time_ds.attrs['calendar'] = np.bytes_('proleptic_gregorian')
         time_ds.attrs['standard_name'] = np.bytes_('time')
 
-        y_ds = _make_netcdf4_dimension(h5out, 'y', n_y)
+        y_ds = _make_netcdf4_dimension(h5out, 'y', n_y, data=y_values)
         y_ds.attrs['standard_name'] = np.bytes_('projection_y_coordinate')
         y_ds.attrs['units'] = np.bytes_('m')
 
-        x_ds = _make_netcdf4_dimension(h5out, 'x', n_x)
+        x_ds = _make_netcdf4_dimension(h5out, 'x', n_x, data=x_values)
         x_ds.attrs['standard_name'] = np.bytes_('projection_x_coordinate')
         x_ds.attrs['units'] = np.bytes_('m')
 
