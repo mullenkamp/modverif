@@ -1,0 +1,968 @@
+"""
+Functions for tracking cyclones in WRF model output using sea level pressure.
+"""
+import pathlib
+from dataclasses import dataclass
+from typing import Union
+
+import h5py
+import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.patches import Circle
+from scipy.ndimage import gaussian_filter
+
+try:
+    import cartopy.crs as ccrs
+    import cartopy.feature as cfeature
+
+    HAS_CARTOPY = True
+except ImportError:
+    HAS_CARTOPY = False
+
+# Physical constants
+GRAVITY = 9.80665  # m/s^2
+GAS_CONSTANT_DRY = 287.05  # J/(kg·K)
+STANDARD_LAPSE_RATE = 0.0065  # K/m
+
+
+def _compute_sea_level_pressure(
+    psfc: np.ndarray,
+    hgt: np.ndarray,
+    t2: np.ndarray,
+    q2: np.ndarray = None,
+) -> np.ndarray:
+    """
+    Estimate sea level pressure from WRF surface variables.
+
+    Uses the hypsometric equation with virtual temperature correction
+    when moisture data is available.
+
+    Parameters
+    ----------
+    psfc : np.ndarray
+        Surface pressure in Pa.
+    hgt : np.ndarray
+        Terrain height in meters.
+    t2 : np.ndarray
+        2-meter temperature in Kelvin.
+    q2 : np.ndarray, optional
+        2-meter water vapor mixing ratio in kg/kg.
+        If provided, virtual temperature correction is applied.
+
+    Returns
+    -------
+    np.ndarray
+        Estimated sea level pressure in Pa.
+    """
+    # Use virtual temperature if moisture is available
+    if q2 is not None:
+        # Virtual temperature: Tv = T * (1 + 0.61 * q)
+        t_virtual = t2 * (1.0 + 0.61 * q2)
+    else:
+        t_virtual = t2
+
+    # Estimate temperature at sea level using standard lapse rate
+    # T_sl = T_surface + lapse_rate * height
+    t_sea_level = t_virtual + STANDARD_LAPSE_RATE * hgt
+
+    # Average temperature in the hypothetical air column
+    t_avg = 0.5 * (t_virtual + t_sea_level)
+
+    # Hypsometric equation: P_sl = P_sfc * exp(g * h / (R * T_avg))
+    slp = psfc * np.exp(GRAVITY * hgt / (GAS_CONSTANT_DRY * t_avg))
+
+    return slp
+
+
+@dataclass
+class CyclonePosition:
+    """Position and characteristics of a cyclone at a single timestep."""
+
+    time_index: int
+    y_index: int
+    x_index: int
+    latitude: float
+    longitude: float
+    central_pressure: float
+    radius_km: float
+    time_str: str = None
+
+
+def _haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """
+    Calculate the great-circle distance between two points in kilometers.
+
+    Parameters
+    ----------
+    lat1, lon1 : float
+        Latitude and longitude of first point in degrees.
+    lat2, lon2 : float
+        Latitude and longitude of second point in degrees.
+
+    Returns
+    -------
+    float
+        Distance in kilometers.
+    """
+    R = 6371.0  # Earth's radius in km
+
+    lat1_rad = np.radians(lat1)
+    lat2_rad = np.radians(lat2)
+    dlat = np.radians(lat2 - lat1)
+    dlon = np.radians(lon2 - lon1)
+
+    a = np.sin(dlat / 2) ** 2 + np.cos(lat1_rad) * np.cos(lat2_rad) * np.sin(dlon / 2) ** 2
+    c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
+
+    return R * c
+
+
+def _grid_distances_km(
+    xlat: np.ndarray,
+    xlong: np.ndarray,
+    center_lat: float,
+    center_lon: float,
+) -> np.ndarray:
+    """
+    Calculate distance in km from each grid point to a center point.
+
+    Parameters
+    ----------
+    xlat : np.ndarray
+        2D array of latitudes (y, x).
+    xlong : np.ndarray
+        2D array of longitudes (y, x).
+    center_lat : float
+        Center point latitude.
+    center_lon : float
+        Center point longitude.
+
+    Returns
+    -------
+    np.ndarray
+        2D array of distances in km.
+    """
+    R = 6371.0
+
+    lat1_rad = np.radians(center_lat)
+    lat2_rad = np.radians(xlat)
+    dlat = np.radians(xlat - center_lat)
+    dlon = np.radians(xlong - center_lon)
+
+    a = np.sin(dlat / 2) ** 2 + np.cos(lat1_rad) * np.cos(lat2_rad) * np.sin(dlon / 2) ** 2
+    c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
+
+    return R * c
+
+
+def _find_pressure_minimum(
+    pressure: np.ndarray,
+    xlat: np.ndarray,
+    xlong: np.ndarray,
+    search_lat: float = None,
+    search_lon: float = None,
+    search_radius_km: float = None,
+) -> tuple[int, int, float]:
+    """
+    Find the location of minimum pressure, optionally within a search radius.
+
+    Parameters
+    ----------
+    pressure : np.ndarray
+        2D array of surface pressure (y, x).
+    xlat : np.ndarray
+        2D array of latitudes (y, x).
+    xlong : np.ndarray
+        2D array of longitudes (y, x).
+    search_lat : float, optional
+        Center latitude for search region.
+    search_lon : float, optional
+        Center longitude for search region.
+    search_radius_km : float, optional
+        Search radius in kilometers.
+
+    Returns
+    -------
+    tuple[int, int, float]
+        (y_index, x_index, min_pressure)
+    """
+    if search_lat is not None and search_lon is not None and search_radius_km is not None:
+        # Create mask for search region
+        distances = _grid_distances_km(xlat, xlong, search_lat, search_lon)
+        mask = distances <= search_radius_km
+
+        if not np.any(mask):
+            raise ValueError(
+                f"No grid points found within {search_radius_km} km of ({search_lat}, {search_lon})"
+            )
+
+        # Set pressure outside search region to infinity
+        pressure_masked = np.where(mask, pressure, np.inf)
+    else:
+        pressure_masked = pressure
+
+    # Find minimum
+    min_idx = np.argmin(pressure_masked)
+    y_idx, x_idx = np.unravel_index(min_idx, pressure.shape)
+
+    return int(y_idx), int(x_idx), float(pressure[y_idx, x_idx])
+
+
+def _estimate_cyclone_radius(
+    pressure: np.ndarray,
+    xlat: np.ndarray,
+    xlong: np.ndarray,
+    center_y: int,
+    center_x: int,
+    pressure_threshold_pa: float = 400.0,
+    max_radius_km: float = 1000.0,
+) -> float:
+    """
+    Estimate cyclone radius based on pressure gradient from center.
+
+    The radius is defined as the distance where pressure increases by
+    a threshold amount from the central minimum, or where the outermost
+    closed isobar would approximately be.
+
+    Parameters
+    ----------
+    pressure : np.ndarray
+        2D array of surface pressure (y, x).
+    xlat : np.ndarray
+        2D array of latitudes (y, x).
+    xlong : np.ndarray
+        2D array of longitudes (y, x).
+    center_y : int
+        Y index of cyclone center.
+    center_x : int
+        X index of cyclone center.
+    pressure_threshold_pa : float
+        Pressure increase from center that defines the edge (default 400 Pa = 4 hPa).
+    max_radius_km : float
+        Maximum radius to consider (default 1000 km).
+
+    Returns
+    -------
+    float
+        Estimated radius in kilometers.
+    """
+    center_lat = xlat[center_y, center_x]
+    center_lon = xlong[center_y, center_x]
+    center_pressure = pressure[center_y, center_x]
+
+    # Calculate distances from center
+    distances = _grid_distances_km(xlat, xlong, center_lat, center_lon)
+
+    # Find where pressure exceeds threshold above center
+    pressure_diff = pressure - center_pressure
+    edge_mask = (pressure_diff >= pressure_threshold_pa) & (distances <= max_radius_km)
+
+    if np.any(edge_mask):
+        # Find minimum distance where threshold is exceeded
+        edge_distances = np.where(edge_mask, distances, np.inf)
+        radius = np.min(edge_distances)
+    else:
+        # If threshold not reached, use max radius or domain edge
+        within_max = distances <= max_radius_km
+        if np.any(within_max & (pressure_diff > 0)):
+            # Use distance to furthest point with positive pressure gradient
+            positive_gradient = (pressure_diff > 0) & within_max
+            radius = np.max(np.where(positive_gradient, distances, 0))
+        else:
+            radius = max_radius_km
+
+    return float(radius)
+
+
+def track_cyclone(
+    wrfout_path: Union[str, pathlib.Path],
+    start_lat: float = None,
+    start_lon: float = None,
+    search_radius_km: float = 500.0,
+    pressure_threshold_pa: float = 400.0,
+    max_cyclone_radius_km: float = 1000.0,
+    smoothing_sigma: float = None,
+) -> list[CyclonePosition]:
+    """
+    Track a cyclone through time using sea level pressure minima.
+
+    Sea level pressure is estimated from WRF surface variables (PSFC, HGT, T2)
+    using the hypsometric equation. If Q2 (2-meter mixing ratio) is available,
+    a virtual temperature correction is applied.
+
+    Starting from an initial position (or the global minimum if not specified),
+    tracks the cyclone by finding the SLP minimum within a search radius
+    of the previous position at each timestep.
+
+    Parameters
+    ----------
+    wrfout_path : str or pathlib.Path
+        Path to WRF output file (netCDF4/HDF5 format).
+    start_lat : float, optional
+        Initial search latitude. If None, uses global pressure minimum at t=0.
+    start_lon : float, optional
+        Initial search longitude. If None, uses global pressure minimum at t=0.
+    search_radius_km : float
+        Radius in km to search for pressure minimum at each timestep.
+        The search is centered on the previous timestep's position.
+        Default is 500 km.
+    pressure_threshold_pa : float
+        Pressure increase from center that defines cyclone edge (default 400 Pa = 4 hPa).
+    max_cyclone_radius_km : float
+        Maximum cyclone radius to consider (default 1000 km).
+    smoothing_sigma : float, optional
+        Standard deviation for Gaussian smoothing of the SLP field.
+        Higher values produce more smoothing. If None (default), no smoothing
+        is applied. Typical values range from 1 to 5 grid cells.
+
+    Returns
+    -------
+    list[CyclonePosition]
+        List of CyclonePosition objects, one per timestep.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the WRF file does not exist.
+    ValueError
+        If required variables (PSFC, HGT, T2, XLAT, XLONG) are not found.
+
+    Notes
+    -----
+    Required WRF variables:
+        - PSFC: Surface pressure (Pa)
+        - HGT: Terrain height (m)
+        - T2: 2-meter temperature (K)
+        - XLAT: Latitude grid
+        - XLONG: Longitude grid
+
+    Optional WRF variables:
+        - Q2: 2-meter water vapor mixing ratio (kg/kg) - improves SLP accuracy
+
+    Examples
+    --------
+    >>> # Track cyclone starting near a known location
+    >>> positions = track_cyclone(
+    ...     'wrfout_d01_2020-03-15_00:00:00',
+    ...     start_lat=-45.0,
+    ...     start_lon=170.0,
+    ...     search_radius_km=300.0,
+    ... )
+    >>> for pos in positions:
+    ...     print(f"t={pos.time_index}: ({pos.latitude:.2f}, {pos.longitude:.2f}) "
+    ...           f"SLP={pos.central_pressure/100:.1f} hPa, R={pos.radius_km:.0f} km")
+    """
+    wrfout_path = pathlib.Path(wrfout_path)
+
+    if not wrfout_path.exists():
+        raise FileNotFoundError(f"WRF file not found: {wrfout_path}")
+
+    positions = []
+
+    with h5py.File(wrfout_path, 'r') as f:
+        # Validate required variables exist
+        required_vars = ['PSFC', 'HGT', 'T2', 'XLAT', 'XLONG']
+        for var in required_vars:
+            if var not in f:
+                raise ValueError(f"Required variable '{var}' not found in {wrfout_path}")
+
+        psfc_ds = f['PSFC']
+        t2_ds = f['T2']
+        xlat_ds = f['XLAT']
+        xlong_ds = f['XLONG']
+
+        # HGT is typically time-invariant in WRF, but may have time dimension
+        hgt_ds = f['HGT']
+        if hgt_ds.ndim == 3:
+            hgt = hgt_ds[0, :, :]
+        else:
+            hgt = hgt_ds[:, :]
+
+        # Q2 is optional - improves virtual temperature calculation
+        has_q2 = 'Q2' in f
+        q2_ds = f['Q2'] if has_q2 else None
+
+        n_times = psfc_ds.shape[0]
+
+        # Get lat/lon grids (use first timestep, typically constant)
+        xlat = xlat_ds[0, :, :]
+        xlong = xlong_ds[0, :, :]
+
+        # Get time strings if available
+        time_strings = None
+        if 'Times' in f:
+            times_data = f['Times'][:]
+            time_strings = []
+            for t_row in times_data:
+                if isinstance(t_row, (bytes, str)):
+                    t_str = t_row.decode('utf-8') if isinstance(t_row, bytes) else t_row
+                else:
+                    t_str = b"".join(t_row).decode('utf-8')
+                time_strings.append(t_str)
+
+        # Initialize search position
+        current_lat = start_lat
+        current_lon = start_lon
+
+        for t in range(n_times):
+            # Read surface variables for this timestep
+            psfc = psfc_ds[t, :, :]
+            t2 = t2_ds[t, :, :]
+            q2 = q2_ds[t, :, :] if has_q2 else None
+
+            # Compute sea level pressure
+            slp = _compute_sea_level_pressure(psfc, hgt, t2, q2)
+
+            # Apply Gaussian smoothing if requested
+            if smoothing_sigma is not None:
+                slp = gaussian_filter(slp, sigma=smoothing_sigma)
+
+            # Find pressure minimum
+            if t == 0 and current_lat is None:
+                # First timestep without start position: global search
+                y_idx, x_idx, min_pressure = _find_pressure_minimum(slp, xlat, xlong)
+            else:
+                # Search within radius of current position
+                y_idx, x_idx, min_pressure = _find_pressure_minimum(
+                    slp,
+                    xlat,
+                    xlong,
+                    search_lat=current_lat,
+                    search_lon=current_lon,
+                    search_radius_km=search_radius_km,
+                )
+
+            # Get position
+            center_lat = float(xlat[y_idx, x_idx])
+            center_lon = float(xlong[y_idx, x_idx])
+
+            # Estimate cyclone radius
+            radius = _estimate_cyclone_radius(
+                slp,
+                xlat,
+                xlong,
+                y_idx,
+                x_idx,
+                pressure_threshold_pa=pressure_threshold_pa,
+                max_radius_km=max_cyclone_radius_km,
+            )
+
+            # Create position record
+            pos = CyclonePosition(
+                time_index=t,
+                y_index=y_idx,
+                x_index=x_idx,
+                latitude=center_lat,
+                longitude=center_lon,
+                central_pressure=min_pressure,
+                radius_km=radius,
+                time_str=time_strings[t] if time_strings else None,
+            )
+            positions.append(pos)
+
+            # Update search position for next timestep
+            current_lat = center_lat
+            current_lon = center_lon
+
+    return positions
+
+
+def track_cyclone_multi_file(
+    wrfout_paths: list[Union[str, pathlib.Path]],
+    start_lat: float = None,
+    start_lon: float = None,
+    search_radius_km: float = 500.0,
+    pressure_threshold_pa: float = 400.0,
+    max_cyclone_radius_km: float = 1000.0,
+    smoothing_sigma: float = None,
+) -> list[CyclonePosition]:
+    """
+    Track a cyclone across multiple WRF output files.
+
+    Files are processed in the order provided. The cyclone position from the
+    last timestep of each file is used as the starting search position for
+    the next file.
+
+    Parameters
+    ----------
+    wrfout_paths : list of str or pathlib.Path
+        List of paths to WRF output files, in chronological order.
+    start_lat : float, optional
+        Initial search latitude for first file.
+    start_lon : float, optional
+        Initial search longitude for first file.
+    search_radius_km : float
+        Radius in km to search for pressure minimum. Default is 500 km.
+    pressure_threshold_pa : float
+        Pressure threshold for cyclone edge detection. Default is 400 Pa.
+    max_cyclone_radius_km : float
+        Maximum cyclone radius. Default is 1000 km.
+    smoothing_sigma : float, optional
+        Standard deviation for Gaussian smoothing of the SLP field.
+        If None (default), no smoothing is applied.
+
+    Returns
+    -------
+    list[CyclonePosition]
+        Combined list of CyclonePosition objects from all files.
+    """
+    all_positions = []
+    current_lat = start_lat
+    current_lon = start_lon
+
+    for path in wrfout_paths:
+        positions = track_cyclone(
+            path,
+            start_lat=current_lat,
+            start_lon=current_lon,
+            search_radius_km=search_radius_km,
+            pressure_threshold_pa=pressure_threshold_pa,
+            max_cyclone_radius_km=max_cyclone_radius_km,
+            smoothing_sigma=smoothing_sigma,
+        )
+
+        # Adjust time indices for continuity
+        time_offset = len(all_positions)
+        for pos in positions:
+            pos.time_index += time_offset
+
+        all_positions.extend(positions)
+
+        # Use last position as start for next file
+        if positions:
+            current_lat = positions[-1].latitude
+            current_lon = positions[-1].longitude
+
+    return all_positions
+
+
+def positions_to_array(positions: list[CyclonePosition]) -> np.ndarray:
+    """
+    Convert list of CyclonePosition to a structured numpy array.
+
+    Parameters
+    ----------
+    positions : list[CyclonePosition]
+        List of cyclone positions.
+
+    Returns
+    -------
+    np.ndarray
+        Structured array with fields: time_index, y_index, x_index,
+        latitude, longitude, central_pressure, radius_km.
+    """
+    dtype = np.dtype([
+        ('time_index', np.int32),
+        ('y_index', np.int32),
+        ('x_index', np.int32),
+        ('latitude', np.float64),
+        ('longitude', np.float64),
+        ('central_pressure', np.float64),
+        ('radius_km', np.float64),
+    ])
+
+    arr = np.zeros(len(positions), dtype=dtype)
+    for i, pos in enumerate(positions):
+        arr[i] = (
+            pos.time_index,
+            pos.y_index,
+            pos.x_index,
+            pos.latitude,
+            pos.longitude,
+            pos.central_pressure,
+            pos.radius_km,
+        )
+
+    return arr
+
+
+def _radius_km_to_degrees(radius_km: float, latitude: float) -> tuple[float, float]:
+    """
+    Convert radius in km to approximate degrees for plotting.
+
+    Parameters
+    ----------
+    radius_km : float
+        Radius in kilometers.
+    latitude : float
+        Latitude at which to compute conversion (affects longitude scaling).
+
+    Returns
+    -------
+    tuple[float, float]
+        (radius_lat_deg, radius_lon_deg) - radius in degrees for lat and lon.
+    """
+    # Approximate degrees per km
+    km_per_deg_lat = 111.0  # ~111 km per degree latitude
+    km_per_deg_lon = 111.0 * np.cos(np.radians(latitude))
+
+    radius_lat_deg = radius_km / km_per_deg_lat
+    radius_lon_deg = radius_km / km_per_deg_lon if km_per_deg_lon > 0 else radius_km / km_per_deg_lat
+
+    return radius_lat_deg, radius_lon_deg
+
+
+def plot_cyclone_timestep(
+    wrfout_path: Union[str, pathlib.Path],
+    position: CyclonePosition,
+    output_path: Union[str, pathlib.Path],
+    slp_levels: list[float] = None,
+    figsize: tuple[float, float] = (12, 10),
+    dpi: int = 150,
+    cmap: str = 'RdYlBu_r',
+    title: str = None,
+):
+    """
+    Plot SLP field with cyclone center and radius for a single timestep.
+
+    Parameters
+    ----------
+    wrfout_path : str or pathlib.Path
+        Path to WRF output file.
+    position : CyclonePosition
+        Cyclone position for this timestep.
+    output_path : str or pathlib.Path
+        Output path for PNG file.
+    slp_levels : list[float], optional
+        Contour levels for SLP in hPa. Default is 960-1040 hPa every 4 hPa.
+    figsize : tuple
+        Figure size in inches. Default is (12, 10).
+    dpi : int
+        Output resolution. Default is 150.
+    cmap : str
+        Colormap for filled contours. Default is 'RdYlBu_r'.
+    title : str, optional
+        Custom title. If None, auto-generated from position data.
+    """
+    wrfout_path = pathlib.Path(wrfout_path)
+    output_path = pathlib.Path(output_path)
+
+    if slp_levels is None:
+        slp_levels = list(range(960, 1044, 4))
+
+    with h5py.File(wrfout_path, 'r') as f:
+        # Read data for this timestep
+        t = position.time_index
+        psfc = f['PSFC'][t, :, :]
+        t2 = f['T2'][t, :, :]
+        hgt = f['HGT'][0, :, :] if f['HGT'].ndim == 3 else f['HGT'][:, :]
+        xlat = f['XLAT'][0, :, :]
+        xlong = f['XLONG'][0, :, :]
+
+        # Wrap longitudes to -180 to 180 range
+        xlong = np.where(xlong < 0, xlong + 360, xlong)
+
+        q2 = f['Q2'][t, :, :] if 'Q2' in f else None
+
+        # Compute SLP
+        slp = _compute_sea_level_pressure(psfc, hgt, t2, q2)
+        slp_hpa = slp / 100.0  # Convert to hPa
+
+    # Create figure with cartopy projection if available
+    if HAS_CARTOPY:
+        fig, ax = plt.subplots(figsize=figsize, subplot_kw={'projection': ccrs.PlateCarree()})
+        transform = ccrs.PlateCarree()
+    else:
+        fig, ax = plt.subplots(figsize=figsize)
+        transform = None
+
+    # Plot filled contours of SLP
+    if transform:
+        cf = ax.contourf(
+            xlong, xlat, slp_hpa,
+            levels=slp_levels,
+            cmap=cmap,
+            extend='both',
+            transform=transform,
+        )
+    else:
+        cf = ax.contourf(
+            xlong, xlat, slp_hpa,
+            levels=slp_levels,
+            cmap=cmap,
+            extend='both',
+        )
+
+    # Plot contour lines
+    if transform:
+        cs = ax.contour(
+            xlong, xlat, slp_hpa,
+            levels=slp_levels,
+            colors='black',
+            linewidths=0.5,
+            transform=transform,
+        )
+    else:
+        cs = ax.contour(
+            xlong, xlat, slp_hpa,
+            levels=slp_levels,
+            colors='black',
+            linewidths=0.5,
+        )
+    ax.clabel(cs, inline=True, fontsize=8, fmt='%.0f')
+
+    # Add land and coastlines if cartopy available
+    if HAS_CARTOPY:
+        ax.add_feature(cfeature.LAND, facecolor='lightgray', alpha=0.5)
+        ax.add_feature(cfeature.COASTLINE, linewidth=1, edgecolor='black')
+        ax.add_feature(cfeature.BORDERS, linewidth=0.5, linestyle='--', edgecolor='gray')
+
+    # Add colorbar
+    cbar = plt.colorbar(cf, ax=ax, shrink=0.8, pad=0.02)
+    cbar.set_label('Sea Level Pressure (hPa)', fontsize=12)
+
+    # Wrap cyclone center longitude to match
+    center_lon = position.longitude
+    if center_lon < 0:
+        center_lon = center_lon + 360
+
+    # Plot cyclone center
+    if HAS_CARTOPY:
+        ax.plot(
+            center_lon, position.latitude,
+            'ko', markersize=10, markerfacecolor='red',
+            markeredgecolor='black', markeredgewidth=2,
+            label=f'Center: {position.central_pressure/100:.1f} hPa',
+            transform=ccrs.PlateCarree(),
+        )
+    else:
+        ax.plot(
+            center_lon, position.latitude,
+            'ko', markersize=10, markerfacecolor='red',
+            markeredgecolor='black', markeredgewidth=2,
+            label=f'Center: {position.central_pressure/100:.1f} hPa',
+        )
+
+    # Plot cyclone radius as a circle
+    radius_lat, radius_lon = _radius_km_to_degrees(position.radius_km, position.latitude)
+    # Use average for circle (approximate)
+    avg_radius_deg = (radius_lat + radius_lon) / 2
+
+    # Plot cyclone radius as a circle
+    if HAS_CARTOPY:
+        # Use theta array to draw circle in lat/lon coordinates
+        theta = np.linspace(0, 2 * np.pi, 100)
+        circle_lons = center_lon + radius_lon * np.cos(theta)
+        circle_lats = position.latitude + radius_lat * np.sin(theta)
+        ax.plot(
+            circle_lons, circle_lats,
+            color='red', linewidth=2, linestyle='--',
+            label=f'Radius: {position.radius_km:.0f} km',
+            transform=ccrs.PlateCarree(),
+        )
+    else:
+        circle = plt.Circle(
+            (center_lon, position.latitude),
+            avg_radius_deg,
+            fill=False,
+            color='red',
+            linewidth=2,
+            linestyle='--',
+            label=f'Radius: {position.radius_km:.0f} km',
+            clip_on=True,
+        )
+        ax.add_patch(circle)
+
+    # Add gridlines
+    if HAS_CARTOPY:
+        gl = ax.gridlines(draw_labels=True, linestyle='--', alpha=0.6, color='gray')
+        gl.top_labels = False
+        gl.right_labels = False
+        gl.xlabel_style = {'fontsize': 10}
+        gl.ylabel_style = {'fontsize': 10}
+    else:
+        ax.grid(True, linestyle='--', alpha=0.6, color='gray')
+        ax.set_xlabel('Longitude', fontsize=12)
+        ax.set_ylabel('Latitude', fontsize=12)
+
+    # Set title
+    if title is None:
+        time_str = position.time_str if position.time_str else f't={position.time_index}'
+        title = (
+            f'Cyclone Track - {time_str}\n'
+            f'Center: ({position.latitude:.2f}°, {position.longitude:.2f}°) | '
+            f'SLP: {position.central_pressure/100:.1f} hPa | '
+            f'Radius: {position.radius_km:.0f} km'
+        )
+    ax.set_title(title, fontsize=14)
+
+    # Add legend
+    ax.legend(loc='upper right', fontsize=10)
+
+    # Set map extent to match data
+    if HAS_CARTOPY:
+        x_max = xlong.max()
+        if x_max > 180:
+            x_max = 180
+
+        ax.set_extent([xlong.min(), x_max, xlat.min(), xlat.max()], crs=ccrs.PlateCarree())
+
+    # Save figure
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(output_path, dpi=dpi, bbox_inches='tight')
+    plt.close(fig)
+
+
+def plot_cyclone_track(
+    wrfout_path: Union[str, pathlib.Path],
+    positions: list[CyclonePosition],
+    output_dir: Union[str, pathlib.Path],
+    filename_prefix: str = 'cyclone',
+    slp_levels: list[float] = None,
+    figsize: tuple[float, float] = (12, 10),
+    dpi: int = 150,
+    cmap: str = 'RdYlBu_r',
+):
+    """
+    Plot SLP field with cyclone center and radius for all timesteps.
+
+    Creates one PNG file per timestep in the output directory.
+
+    Parameters
+    ----------
+    wrfout_path : str or pathlib.Path
+        Path to WRF output file.
+    positions : list[CyclonePosition]
+        List of cyclone positions from track_cyclone().
+    output_dir : str or pathlib.Path
+        Directory to save PNG files.
+    filename_prefix : str
+        Prefix for output filenames. Default is 'cyclone'.
+        Files will be named: {prefix}_t{time_index:03d}.png
+    slp_levels : list[float], optional
+        Contour levels for SLP in hPa. Default is 960-1040 hPa every 4 hPa.
+    figsize : tuple
+        Figure size in inches. Default is (12, 10).
+    dpi : int
+        Output resolution. Default is 150.
+    cmap : str
+        Colormap for filled contours. Default is 'RdYlBu_r'.
+
+    Returns
+    -------
+    list[pathlib.Path]
+        List of paths to created PNG files.
+
+    Examples
+    --------
+    >>> positions = track_cyclone('wrfout_d01_2020-03-15_00:00:00', start_lat=-45.0, start_lon=170.0)
+    >>> png_files = plot_cyclone_track('wrfout_d01_2020-03-15_00:00:00', positions, './cyclone_plots/')
+    """
+    output_dir = pathlib.Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    output_files = []
+
+    for pos in positions:
+        output_path = output_dir / f'{filename_prefix}_t{pos.time_index:03d}.png'
+
+        plot_cyclone_timestep(
+            wrfout_path=wrfout_path,
+            position=pos,
+            output_path=output_path,
+            slp_levels=slp_levels,
+            figsize=figsize,
+            dpi=dpi,
+            cmap=cmap,
+        )
+
+        output_files.append(output_path)
+
+    return output_files
+
+
+def plot_cyclone_track_multi_file(
+    wrfout_paths: list[Union[str, pathlib.Path]],
+    positions: list[CyclonePosition],
+    output_dir: Union[str, pathlib.Path],
+    filename_prefix: str = 'cyclone',
+    slp_levels: list[float] = None,
+    figsize: tuple[float, float] = (12, 10),
+    dpi: int = 150,
+    cmap: str = 'RdYlBu_r',
+):
+    """
+    Plot cyclone track across multiple WRF files.
+
+    Parameters
+    ----------
+    wrfout_paths : list of str or pathlib.Path
+        List of WRF output file paths in chronological order.
+    positions : list[CyclonePosition]
+        List of cyclone positions from track_cyclone_multi_file().
+    output_dir : str or pathlib.Path
+        Directory to save PNG files.
+    filename_prefix : str
+        Prefix for output filenames. Default is 'cyclone'.
+    slp_levels : list[float], optional
+        Contour levels for SLP in hPa.
+    figsize : tuple
+        Figure size in inches.
+    dpi : int
+        Output resolution.
+    cmap : str
+        Colormap for filled contours.
+
+    Returns
+    -------
+    list[pathlib.Path]
+        List of paths to created PNG files.
+    """
+    output_dir = pathlib.Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Build mapping of time indices to files
+    # Each file contributes a range of time indices
+    file_time_ranges = []
+    time_offset = 0
+
+    for path in wrfout_paths:
+        path = pathlib.Path(path)
+        with h5py.File(path, 'r') as f:
+            n_times = f['PSFC'].shape[0]
+        file_time_ranges.append((time_offset, time_offset + n_times, path))
+        time_offset += n_times
+
+    output_files = []
+
+    for pos in positions:
+        # Find which file contains this timestep
+        wrfout_path = None
+        local_time_index = pos.time_index
+
+        for start_t, end_t, path in file_time_ranges:
+            if start_t <= pos.time_index < end_t:
+                wrfout_path = path
+                local_time_index = pos.time_index - start_t
+                break
+
+        if wrfout_path is None:
+            raise ValueError(f"Could not find file for time index {pos.time_index}")
+
+        # Create a temporary position with local time index for plotting
+        local_pos = CyclonePosition(
+            time_index=local_time_index,
+            y_index=pos.y_index,
+            x_index=pos.x_index,
+            latitude=pos.latitude,
+            longitude=pos.longitude,
+            central_pressure=pos.central_pressure,
+            radius_km=pos.radius_km,
+            time_str=pos.time_str,
+        )
+
+        output_path = output_dir / f'{filename_prefix}_t{pos.time_index:03d}.png'
+
+        plot_cyclone_timestep(
+            wrfout_path=wrfout_path,
+            position=local_pos,
+            output_path=output_path,
+            slp_levels=slp_levels,
+            figsize=figsize,
+            dpi=dpi,
+            cmap=cmap,
+        )
+
+        output_files.append(output_path)
+
+    return output_files

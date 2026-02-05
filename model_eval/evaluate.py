@@ -9,6 +9,15 @@ import h5py
 import numpy as np
 import rechunkit
 
+from model_eval.cyclone import (
+    CyclonePosition,
+    _compute_sea_level_pressure,
+    _estimate_cyclone_radius,
+    _find_pressure_minimum,
+    _grid_distances_km,
+    _haversine_distance,
+)
+
 ###################################################
 ### Parameters
 
@@ -21,6 +30,9 @@ DIMENSION_LIST = 'DIMENSION_LIST'
 CLASS = 'CLASS'
 NAME = 'NAME'
 REFERENCE_LIST = 'REFERENCE_LIST'
+
+# Available domain-aggregated metrics
+AVAILABLE_DOMAIN_METRICS = ('ne', 'ane', 'rmse')
 
 # Available metrics
 AVAILABLE_METRICS = ('ne', 'ane', 'rse')
@@ -266,6 +278,172 @@ def compute_rse(
     return rse.astype(np.float32)
 
 
+##################################################
+### Domain-aggregated metric functions
+
+
+def compute_ne_domain(
+    source_data: np.ndarray,
+    test_data: np.ndarray,
+    mask: np.ndarray = None,
+    epsilon: float = 1e-10,
+) -> np.ndarray:
+    """
+    Compute domain-aggregated normalised error for each timestep.
+
+    NE_domain = ((sum(test) - sum(source)) / sum(source)) * 100
+
+    This aggregates over the spatial domain first, then computes the
+    normalised error. Useful when cell-by-cell comparison is inappropriate
+    due to spatial alignment differences.
+
+    Parameters
+    ----------
+    source_data : np.ndarray
+        Reference/baseline model data with shape (time, y, x).
+    test_data : np.ndarray
+        Test model data with shape (time, y, x).
+    mask : np.ndarray, optional
+        2D boolean mask (y, x). True = include cell. If None, use all cells.
+    epsilon : float
+        Small value to avoid division by zero.
+
+    Returns
+    -------
+    np.ndarray
+        Normalised error as percentage for each timestep (float64, shape: (time,)).
+    """
+    if mask is not None:
+        # Apply mask - set masked cells to 0 for summation
+        source_masked = np.where(mask, source_data, 0.0)
+        test_masked = np.where(mask, test_data, 0.0)
+    else:
+        source_masked = source_data
+        test_masked = test_data
+
+    # Sum over spatial dimensions (axes 1 and 2)
+    source_sum = np.sum(source_masked, axis=(1, 2))
+    test_sum = np.sum(test_masked, axis=(1, 2))
+
+    # Compute normalised error
+    with np.errstate(divide='ignore', invalid='ignore'):
+        ne = ((test_sum - source_sum) / source_sum) * 100
+
+    # Handle division by zero
+    ne = np.where(np.abs(source_sum) < epsilon, 0.0, ne)
+    ne = np.nan_to_num(ne, nan=0.0, posinf=0.0, neginf=0.0)
+
+    return ne
+
+
+def compute_ane_domain(
+    source_data: np.ndarray,
+    test_data: np.ndarray,
+    mask: np.ndarray = None,
+    epsilon: float = 1e-10,
+) -> np.ndarray:
+    """
+    Compute domain-aggregated absolute normalised error for each timestep.
+
+    ANE_domain = |((sum(test) - sum(source)) / sum(source))| * 100
+
+    Parameters
+    ----------
+    source_data : np.ndarray
+        Reference/baseline model data with shape (time, y, x).
+    test_data : np.ndarray
+        Test model data with shape (time, y, x).
+    mask : np.ndarray, optional
+        2D boolean mask (y, x). True = include cell. If None, use all cells.
+    epsilon : float
+        Small value to avoid division by zero.
+
+    Returns
+    -------
+    np.ndarray
+        Absolute normalised error as percentage for each timestep (float64, shape: (time,)).
+    """
+    ne = compute_ne_domain(source_data, test_data, mask, epsilon)
+    return np.abs(ne)
+
+
+def compute_rmse_domain(
+    source_data: np.ndarray,
+    test_data: np.ndarray,
+    mask: np.ndarray = None,
+) -> np.ndarray:
+    """
+    Compute domain-aggregated root mean square error for each timestep.
+
+    RMSE_domain = sqrt(mean((test - source)^2))
+
+    This computes the RMSE across all spatial cells at each timestep.
+
+    Parameters
+    ----------
+    source_data : np.ndarray
+        Reference/baseline model data with shape (time, y, x).
+    test_data : np.ndarray
+        Test model data with shape (time, y, x).
+    mask : np.ndarray, optional
+        2D boolean mask (y, x). True = include cell. If None, use all cells.
+
+    Returns
+    -------
+    np.ndarray
+        RMSE in same units as input for each timestep (float64, shape: (time,)).
+    """
+    squared_error = (test_data - source_data) ** 2
+
+    if mask is not None:
+        # Apply mask - only include masked cells in mean
+        n_cells = np.sum(mask)
+        squared_error_masked = np.where(mask, squared_error, 0.0)
+        mse = np.sum(squared_error_masked, axis=(1, 2)) / n_cells
+    else:
+        mse = np.mean(squared_error, axis=(1, 2))
+
+    rmse = np.sqrt(mse)
+    return rmse
+
+
+def _get_domain_metric_info(metric: str) -> dict:
+    """
+    Get metadata for a domain-aggregated metric.
+
+    Parameters
+    ----------
+    metric : str
+        Metric name ('ne', 'ane', 'rmse').
+
+    Returns
+    -------
+    dict
+        Dictionary with 'dtype', 'units', 'long_name', 'standard_name' keys.
+    """
+    info = {
+        'ne': {
+            'dtype': np.float64,
+            'units': 'percent',
+            'long_name': 'Domain-aggregated Normalised Error',
+            'standard_name': 'domain_normalised_error',
+        },
+        'ane': {
+            'dtype': np.float64,
+            'units': 'percent',
+            'long_name': 'Domain-aggregated Absolute Normalised Error',
+            'standard_name': 'domain_absolute_normalised_error',
+        },
+        'rmse': {
+            'dtype': np.float64,
+            'units': 'same as variable',
+            'long_name': 'Domain-aggregated Root Mean Square Error',
+            'standard_name': 'domain_root_mean_square_error',
+        },
+    }
+    return info[metric]
+
+
 def _make_netcdf4_dimension(h5file: h5py.File, name: str, size: int, data: np.ndarray = None) -> h5py.Dataset:
     """
     Create a NetCDF4-compliant dimension scale.
@@ -361,23 +539,73 @@ def _get_wrf_proj4(attrs: h5py.AttributeManager) -> str:
     return None
 
 
-def evaluate_models(
+def _find_latlon_bounds(
+    h5file: h5py.File,
+    bounds: tuple[float, float, float, float],
+) -> tuple[slice, slice]:
+    """
+    Find y, x index slices that correspond to lat/lon bounds.
+
+    Parameters
+    ----------
+    h5file : h5py.File
+        Open WRF HDF5 file containing XLAT and XLONG variables.
+    bounds : tuple
+        (min_lat, max_lat, min_lon, max_lon) defining the region of interest.
+
+    Returns
+    -------
+    tuple[slice, slice]
+        (y_slice, x_slice) for subsetting data to the region.
+
+    Raises
+    ------
+    ValueError
+        If XLAT/XLONG not found or no grid cells fall within bounds.
+    """
+    if 'XLAT' not in h5file or 'XLONG' not in h5file:
+        raise ValueError("XLAT and XLONG variables required for lat/lon bounds subsetting")
+
+    min_lat, max_lat, min_lon, max_lon = bounds
+
+    # XLAT and XLONG are typically (time, y, x), use first timestep
+    xlat = h5file['XLAT'][0, :, :]
+    xlong = h5file['XLONG'][0, :, :]
+
+    # Find cells within bounds
+    mask = (xlat >= min_lat) & (xlat <= max_lat) & (xlong >= min_lon) & (xlong <= max_lon)
+
+    if not np.any(mask):
+        raise ValueError(
+            f"No grid cells found within bounds: lat=[{min_lat}, {max_lat}], lon=[{min_lon}, {max_lon}]"
+        )
+
+    # Find bounding box of valid cells
+    y_indices, x_indices = np.where(mask)
+    y_slice = slice(y_indices.min(), y_indices.max() + 1)
+    x_slice = slice(x_indices.min(), x_indices.max() + 1)
+
+    return y_slice, x_slice
+
+
+def evaluate_models_cell(
     source_folder: Union[str, pathlib.Path],
     test_folder: Union[str, pathlib.Path],
     output_path: Union[str, pathlib.Path],
     domain: int,
     variables: list[str],
     metrics: Union[str, list[str]] = 'ne',
+    region: Union[tuple[float, float, float, float], np.ndarray, None] = None,
     start_date: Union[str, date] = None,
     end_date: Union[str, date] = None,
     epsilon: float = 1e-10,
     max_memory_bytes: int = 2**29,
 ) -> pathlib.Path:
     """
-    Evaluate two WRF model runs by computing error metrics for each variable and timestep.
+    Evaluate two WRF model runs by computing cell-by-cell error metrics.
 
     This function compares WRF output files (netCDF4/HDF5 format) from two model runs,
-    computing one or more error metrics.
+    computing one or more error metrics at each grid cell.
 
     Processing is done one timestep at a time (full spatial extent) using rechunkit
     to handle arbitrarily-chunked source files efficiently.
@@ -400,6 +628,13 @@ def evaluate_models(
         - 'ane': Absolute Normalised Error = |NE| [int16, percent]
         - 'rse': Root Squared Error = sqrt((test - source)^2) [float32, same units]
         Can be a single string or list of strings. Default is 'ne'.
+    region : tuple or np.ndarray, optional
+        Spatial region to evaluate. Can be either:
+        - tuple of 4 floats (min_lat, max_lat, min_lon, max_lon): Extract a rectangular
+          region based on lat/lon bounds. Requires XLAT and XLONG in WRF files.
+        - 2D numpy boolean array: Mask array where True indicates cells to include.
+          Must match spatial dimensions (n_y, n_x). Masked cells are set to fill value.
+        If None (default), evaluate the entire domain.
     start_date : str or date, optional
         Start date (inclusive) for evaluation period. Can be ISO format string
         (e.g., '2020-09-30') or date object. If None, no lower bound.
@@ -473,8 +708,32 @@ def evaluate_models(
     # Create output directory if needed
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Parse region parameter
+    y_slice = slice(None)
+    x_slice = slice(None)
+    spatial_mask = None  # 2D boolean mask (after slicing)
+    use_mask = False
+
+    if region is not None:
+        if isinstance(region, np.ndarray):
+            # 2D mask array
+            if region.ndim != 2:
+                raise ValueError(f"Spatial mask must be 2D, got {region.ndim}D array")
+            spatial_mask = region.astype(bool)
+            use_mask = True
+        elif isinstance(region, (list, tuple)) and len(region) == 4:
+            # Lat/lon bounds - will resolve to slices after opening first file
+            pass
+        else:
+            raise ValueError(
+                "region must be either a tuple of 4 floats (min_lat, max_lat, min_lon, max_lon) "
+                "or a 2D numpy boolean array"
+            )
+
     # Scan all files to get shape info, total timesteps, and coordinate data
     n_times = 0
+    n_y_full = None
+    n_x_full = None
     n_y = None
     n_x = None
     dx = None
@@ -488,7 +747,7 @@ def evaluate_models(
         test_file = test_files[run_date]
         with h5py.File(source_file, 'r') as h5s, h5py.File(test_file, 'r') as h5t:
             # Validate variables exist (only need to check first file pair fully)
-            if n_y is None:
+            if n_y_full is None:
                 for var in variables:
                     if var not in h5s:
                         raise ValueError(f"Variable '{var}' not found in {source_file}")
@@ -498,9 +757,34 @@ def evaluate_models(
             ref_var = h5s[variables[0]]
             test_var = h5t[variables[0]]
 
-            if n_y is None:
-                n_y = ref_var.shape[1]
-                n_x = ref_var.shape[2]
+            if n_y_full is None:
+                n_y_full = ref_var.shape[1]
+                n_x_full = ref_var.shape[2]
+
+                # Resolve region to slices/mask on first file
+                if region is not None:
+                    if isinstance(region, (list, tuple)) and len(region) == 4:
+                        # Lat/lon bounds - find corresponding indices
+                        y_slice, x_slice = _find_latlon_bounds(h5s, tuple(region))
+
+                    if spatial_mask is not None:
+                        # Validate mask shape matches full domain
+                        if spatial_mask.shape != (n_y_full, n_x_full):
+                            raise ValueError(
+                                f"Mask shape {spatial_mask.shape} does not match "
+                                f"domain shape ({n_y_full}, {n_x_full})"
+                            )
+
+                # Calculate output dimensions
+                if y_slice != slice(None):
+                    n_y = y_slice.stop - y_slice.start
+                else:
+                    n_y = n_y_full
+                if x_slice != slice(None):
+                    n_x = x_slice.stop - x_slice.start
+                else:
+                    n_x = n_x_full
+
                 # Get grid spacing and projection from global attributes
                 dx = h5s.attrs.get('DX')
                 dy = h5s.attrs.get('DY')
@@ -530,9 +814,17 @@ def evaluate_models(
                         all_times.append(np.nan)
 
     time_values = np.array(all_times, dtype='f8') if all_times else None
-    x_values = (np.arange(n_x) * dx).astype('f4') if dx is not None else None
-    y_values = (np.arange(n_y) * dy).astype('f4') if dy is not None else None
-    raw_times_values = np.concatenate(all_raw_times, axis=0) if all_raw_times else None
+    # Calculate coordinate arrays with correct offset for subsetted regions
+    if dx is not None:
+        x_start = x_slice.start if x_slice != slice(None) else 0
+        x_values = ((np.arange(n_x) + x_start) * dx).astype('f4')
+    else:
+        x_values = None
+    if dy is not None:
+        y_start = y_slice.start if y_slice != slice(None) else 0
+        y_values = ((np.arange(n_y) + y_start) * dy).astype('f4')
+    else:
+        y_values = None
 
     with h5py.File(output_path, 'w') as h5out:
         # Set NetCDF4 conventions
@@ -550,16 +842,6 @@ def evaluate_models(
         time_ds.attrs['calendar'] = np.bytes_('proleptic_gregorian')
         time_ds.attrs['standard_name'] = np.bytes_('time')
 
-        if raw_times_values is not None:
-            # Create WRF-style Times variable
-            if raw_times_values.ndim == 2:
-                char_dim_size = raw_times_values.shape[1]
-                if 'DateStrLen' not in h5out:
-                    _make_netcdf4_dimension(h5out, 'DateStrLen', char_dim_size)
-                h5out.create_dataset('Times', data=raw_times_values, dtype='S1')
-            else:
-                h5out.create_dataset('Times', data=raw_times_values)
-
         y_ds = _make_netcdf4_dimension(h5out, 'y', n_y, data=y_values)
         y_ds.attrs['standard_name'] = np.bytes_('projection_y_coordinate')
         y_ds.attrs['units'] = np.bytes_('m')
@@ -570,23 +852,65 @@ def evaluate_models(
 
         dim_scales = [time_ds, y_ds, x_ds]
 
+        # Store region information in output file attributes
+        if region is not None:
+            if isinstance(region, (list, tuple)) and len(region) == 4:
+                h5out.attrs['region_type'] = np.bytes_('latlon_bounds')
+                h5out.attrs['region_min_lat'] = region[0]
+                h5out.attrs['region_max_lat'] = region[1]
+                h5out.attrs['region_min_lon'] = region[2]
+                h5out.attrs['region_max_lon'] = region[3]
+            elif use_mask:
+                h5out.attrs['region_type'] = np.bytes_('spatial_mask')
+                # Store the mask in the output file
+                mask_ds = h5out.create_dataset(
+                    'spatial_mask',
+                    data=spatial_mask.astype(np.int8),
+                    compression='gzip',
+                    compression_opts=4,
+                )
+                mask_ds.attrs['long_name'] = np.bytes_('Spatial mask (1=included, 0=excluded)')
+                mask_ds.attrs['flag_values'] = np.array([0, 1], dtype=np.int8)
+                mask_ds.attrs['flag_meanings'] = np.bytes_('excluded included')
+                _attach_dimension_scales(mask_ds, [y_ds, x_ds])
+
         # Create output datasets for each variable and metric combination
         out_datasets = {}
         for var in variables:
             for metric in metrics:
                 metric_info = _get_metric_info(metric)
                 ds_name = f'{var}_{metric}'
-                out_ds = h5out.create_dataset(
-                    ds_name,
-                    shape=(n_times, n_y, n_x),
-                    dtype=metric_info['dtype'],
-                    chunks=(1, n_y, n_x),
-                    compression='gzip',
-                    compression_opts=4,
-                )
+
+                # Determine fill value for masked data
+                if use_mask:
+                    if metric_info['dtype'] == np.float32:
+                        fill_value = np.float32(np.nan)
+                    else:
+                        fill_value = np.iinfo(metric_info['dtype']).min
+                    out_ds = h5out.create_dataset(
+                        ds_name,
+                        shape=(n_times, n_y, n_x),
+                        dtype=metric_info['dtype'],
+                        chunks=(1, n_y, n_x),
+                        compression='gzip',
+                        compression_opts=4,
+                        fillvalue=fill_value,
+                    )
+                else:
+                    out_ds = h5out.create_dataset(
+                        ds_name,
+                        shape=(n_times, n_y, n_x),
+                        dtype=metric_info['dtype'],
+                        chunks=(1, n_y, n_x),
+                        compression='gzip',
+                        compression_opts=4,
+                    )
+
                 out_ds.attrs['units'] = np.bytes_(metric_info['units'])
                 out_ds.attrs['long_name'] = np.bytes_(f"{metric_info['long_name']} for {var}")
                 out_ds.attrs['standard_name'] = np.bytes_(metric_info['standard_name'])
+                if use_mask:
+                    out_ds.attrs['_FillValue'] = fill_value
 
                 # Attach dimension scales
                 _attach_dimension_scales(out_ds, dim_scales)
@@ -649,10 +973,15 @@ def evaluate_models(
                     for (source_slices, source_data), (_, test_data) in zip(
                         source_rechunker, test_rechunker
                     ):
+                        # Apply spatial subsetting if using lat/lon bounds
+                        if y_slice != slice(None) or x_slice != slice(None):
+                            source_data = source_data[:, y_slice, x_slice]
+                            test_data = test_data[:, y_slice, x_slice]
+
                         # Adjust time slice for output position
                         out_time_start = time_offset + source_slices[0].start
                         out_time_stop = time_offset + source_slices[0].stop
-                        out_slices = (slice(out_time_start, out_time_stop), source_slices[1], source_slices[2])
+                        out_slices = (slice(out_time_start, out_time_stop), slice(None), slice(None))
 
                         # Compute and store each metric
                         for metric in metrics:
@@ -663,8 +992,802 @@ def evaluate_models(
                             elif metric == 'rse':
                                 result = compute_rse(source_data, test_data)
 
+                            # Apply spatial mask if provided
+                            if use_mask and spatial_mask is not None:
+                                metric_info = _get_metric_info(metric)
+                                if metric_info['dtype'] == np.float32:
+                                    fill_value = np.nan
+                                else:
+                                    # Use minimum value for int16 as fill
+                                    fill_value = np.iinfo(metric_info['dtype']).min
+                                # Broadcast mask to match result shape (time, y, x)
+                                result = np.where(spatial_mask, result, fill_value)
+
                             out_datasets[(var, metric)][out_slices] = result
 
                     time_offset += n_timesteps
+
+    return output_path
+
+
+def evaluate_models_domain(
+    source_folder: Union[str, pathlib.Path],
+    test_folder: Union[str, pathlib.Path],
+    output_path: Union[str, pathlib.Path],
+    domain: int,
+    variables: list[str],
+    metrics: Union[str, list[str]] = 'ne',
+    region: Union[tuple[float, float, float, float], np.ndarray, None] = None,
+    start_date: Union[str, date] = None,
+    end_date: Union[str, date] = None,
+    epsilon: float = 1e-10,
+    max_memory_bytes: int = 2**29,
+) -> pathlib.Path:
+    """
+    Evaluate two WRF model runs using domain-aggregated metrics.
+
+    Unlike evaluate_models() which computes cell-by-cell metrics, this function
+    first aggregates values over the spatial domain at each timestep, then
+    computes the metric. This is useful when:
+
+    - Cell-by-cell comparison is inappropriate due to spatial alignment differences
+    - You want to compare bulk/integrated quantities (e.g., total precipitation)
+    - You need a single metric value per timestep for time series analysis
+
+    For example, domain-aggregated NE is computed as:
+        NE = ((sum(test) - sum(source)) / sum(source)) * 100
+
+    Parameters
+    ----------
+    source_folder : str or pathlib.Path
+        Path to folder containing source/reference WRF output files.
+    test_folder : str or pathlib.Path
+        Path to folder containing test WRF output files to evaluate.
+    output_path : str or pathlib.Path
+        Path for output NetCDF4 file containing evaluation results.
+    domain : int
+        WRF domain number to evaluate (e.g., 4 for d04 files).
+    variables : list[str]
+        List of WRF variable names to evaluate (e.g., ['T2', 'Q2', 'U10']).
+    metrics : str or list[str]
+        Metric(s) to compute. Available metrics:
+        - 'ne': Normalised Error = ((sum(test) - sum(source)) / sum(source)) * 100
+        - 'ane': Absolute Normalised Error = |NE|
+        - 'rmse': Root Mean Square Error = sqrt(mean((test - source)^2))
+        Can be a single string or list of strings. Default is 'ne'.
+    region : tuple or np.ndarray, optional
+        Spatial region to aggregate over. Can be either:
+        - tuple of 4 floats (min_lat, max_lat, min_lon, max_lon): Rectangular region.
+        - 2D numpy boolean array: Mask where True indicates cells to include.
+        If None (default), aggregate over the entire domain.
+    start_date : str or date, optional
+        Start date (inclusive) for evaluation period.
+    end_date : str or date, optional
+        End date (inclusive) for evaluation period.
+    epsilon : float
+        Small value to avoid division by zero in NE/ANE calculation.
+    max_memory_bytes : int
+        Maximum memory for rechunkit to use during chunk processing.
+
+    Returns
+    -------
+    pathlib.Path
+        Path to the output file.
+
+    Notes
+    -----
+    Output NetCDF4 structure:
+        Dimensions: time, metric
+        Coordinates:
+            time   - timestep coordinate (hours since 1970-01-01)
+            metric - integer index (0, 1, 2, ...) with flag_meanings attribute
+        Variables:
+            /{variable}  - 2D array with dimensions (time, metric)
+            e.g., T2[time, metric], RAINNC[time, metric]
+
+    The metric coordinate uses integer indices for compatibility with tools
+    like Panoply. The metric names are stored in the 'flag_meanings' attribute
+    of the metric variable (e.g., "ne ane rmse").
+
+    Example access with xarray:
+        ds = xr.open_dataset('output.nc')
+        ds['T2'].isel(metric=0)  # Get first metric (e.g., NE)
+        ds['T2'].isel(metric=1)  # Get second metric (e.g., ANE)
+
+        # Get metric names from attribute
+        metric_names = ds['metric'].attrs['flag_meanings'].split()
+    """
+    source_folder = pathlib.Path(source_folder)
+    test_folder = pathlib.Path(test_folder)
+    output_path = pathlib.Path(output_path)
+
+    # Normalize metrics to a list
+    if isinstance(metrics, str):
+        metrics = [metrics]
+    metrics = [m.lower() for m in metrics]
+
+    # Validate metrics
+    for m in metrics:
+        if m not in AVAILABLE_DOMAIN_METRICS:
+            raise ValueError(f"Unknown metric '{m}'. Available domain metrics: {AVAILABLE_DOMAIN_METRICS}")
+
+    # Parse date strings if provided
+    if isinstance(start_date, str):
+        start_date = date.fromisoformat(start_date)
+    if isinstance(end_date, str):
+        end_date = date.fromisoformat(end_date)
+
+    if not source_folder.exists():
+        raise FileNotFoundError(f"Source folder not found: {source_folder}")
+    if not test_folder.exists():
+        raise FileNotFoundError(f"Test folder not found: {test_folder}")
+
+    # Find matching files within date range
+    source_files = find_wrfout_files(source_folder, domain, start_date, end_date)
+    test_files = find_wrfout_files(test_folder, domain, start_date, end_date)
+
+    if not source_files:
+        raise ValueError(f"No wrfout files found for domain {domain} in {source_folder}")
+    if not test_files:
+        raise ValueError(f"No wrfout files found for domain {domain} in {test_folder}")
+
+    # Find common dates
+    common_dates = sorted(set(source_files.keys()) & set(test_files.keys()))
+    if not common_dates:
+        raise ValueError("No common dates found between source and test folders")
+
+    # Create output directory if needed
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Parse region parameter
+    y_slice = slice(None)
+    x_slice = slice(None)
+    spatial_mask = None
+
+    if region is not None:
+        if isinstance(region, np.ndarray):
+            if region.ndim != 2:
+                raise ValueError(f"Spatial mask must be 2D, got {region.ndim}D array")
+            spatial_mask = region.astype(bool)
+        elif isinstance(region, (list, tuple)) and len(region) == 4:
+            # Will resolve to slices after opening first file
+            region = tuple(region)
+        else:
+            raise ValueError(
+                "region must be either a tuple of 4 floats (min_lat, max_lat, min_lon, max_lon) "
+                "or a 2D numpy boolean array"
+            )
+
+    # Scan all files to get shape info and total timesteps
+    n_times = 0
+    n_y_full = None
+    n_x_full = None
+    proj4 = None
+    all_times = []
+
+    for run_date in common_dates:
+        source_file = source_files[run_date]
+        test_file = test_files[run_date]
+        with h5py.File(source_file, 'r') as h5s, h5py.File(test_file, 'r') as h5t:
+            if n_y_full is None:
+                for var in variables:
+                    if var not in h5s:
+                        raise ValueError(f"Variable '{var}' not found in {source_file}")
+                    if var not in h5t:
+                        raise ValueError(f"Variable '{var}' not found in {test_file}")
+
+            ref_var = h5s[variables[0]]
+            test_var = h5t[variables[0]]
+
+            if n_y_full is None:
+                n_y_full = ref_var.shape[1]
+                n_x_full = ref_var.shape[2]
+
+                # Resolve region to slices on first file
+                if isinstance(region, tuple):
+                    y_slice, x_slice = _find_latlon_bounds(h5s, region)
+
+                elif spatial_mask is not None:
+                    if spatial_mask.shape != (n_y_full, n_x_full):
+                        raise ValueError(
+                            f"Mask shape {spatial_mask.shape} does not match "
+                            f"domain shape ({n_y_full}, {n_x_full})"
+                        )
+
+                # dx = h5s.attrs.get('DX')
+                # dy = h5s.attrs.get('DY')
+                proj4 = _get_wrf_proj4(h5s.attrs)
+
+            file_n_times = min(ref_var.shape[0], test_var.shape[0])
+            n_times += file_n_times
+
+            # Collect times from source file
+            if 'Times' in h5s:
+                times_data = h5s['Times'][:file_n_times]
+                for t_row in times_data:
+                    if isinstance(t_row, (bytes, str)):
+                        t_str = t_row.decode('utf-8') if isinstance(t_row, bytes) else t_row
+                    else:
+                        t_str = b"".join(t_row).decode('utf-8')
+                    t_str = t_str.replace('_', 'T')
+                    try:
+                        dt = np.datetime64(t_str)
+                        hours = (dt - np.datetime64('1970-01-01')) / np.timedelta64(1, 'h')
+                        all_times.append(hours)
+                    except ValueError:
+                        all_times.append(np.nan)
+
+    time_values = np.array(all_times, dtype='f8') if all_times else None
+
+    with h5py.File(output_path, 'w') as h5out:
+        # Set NetCDF4 conventions
+        h5out.attrs['Conventions'] = np.bytes_('CF-1.8')
+        h5out.attrs['history'] = np.bytes_(f'Created {datetime.now().isoformat()} by model_eval')
+        h5out.attrs['source_folder'] = np.bytes_(str(source_folder))
+        h5out.attrs['test_folder'] = np.bytes_(str(test_folder))
+        h5out.attrs['domain'] = domain
+        h5out.attrs['aggregation_type'] = np.bytes_('domain')
+        if proj4:
+            h5out.attrs['proj4'] = np.bytes_(proj4)
+
+        # Store region information
+        if region is not None:
+            if isinstance(region, (list, tuple)) and len(region) == 4:
+                h5out.attrs['region_type'] = np.bytes_('latlon_bounds')
+                h5out.attrs['region_min_lat'] = region[0]
+                h5out.attrs['region_max_lat'] = region[1]
+                h5out.attrs['region_min_lon'] = region[2]
+                h5out.attrs['region_max_lon'] = region[3]
+            elif spatial_mask is not None:
+                h5out.attrs['region_type'] = np.bytes_('spatial_mask')
+
+        # Create time dimension
+        time_ds = _make_netcdf4_dimension(h5out, 'time', n_times, data=time_values)
+        time_ds.attrs['units'] = np.bytes_('hours since 1970-01-01')
+        time_ds.attrs['calendar'] = np.bytes_('proleptic_gregorian')
+        time_ds.attrs['standard_name'] = np.bytes_('time')
+
+        # Create metric dimension with integer index
+        n_metrics = len(metrics)
+        metric_ds = h5out.create_dataset('metric', data=np.arange(n_metrics, dtype=np.int32))
+        metric_ds.attrs[CLASS] = np.bytes_('DIMENSION_SCALE')
+        metric_ds.attrs[NAME] = np.bytes_('metric')
+        metric_ds.attrs['long_name'] = np.bytes_('Evaluation metric index')
+        # Store metric names as space-separated attribute (CF-compliant)
+        metric_ds.attrs['metric_names'] = np.bytes_(' '.join(metrics))
+        # Also store as flag_meanings style for easier parsing
+        metric_ds.attrs['flag_values'] = np.arange(n_metrics, dtype=np.int32)
+        metric_ds.attrs['flag_meanings'] = np.bytes_(' '.join(metrics))
+
+        # Build metric index lookup
+        metric_indices = {m: i for i, m in enumerate(metrics)}
+
+        # Create output datasets for each variable with shape (time, metric)
+        out_datasets = {}
+        for var in variables:
+            out_ds = h5out.create_dataset(
+                var,
+                shape=(n_times, n_metrics),
+                dtype=np.float32,
+                compression='gzip',
+                compression_opts=4,
+            )
+            out_ds.attrs['long_name'] = np.bytes_(f"Domain-aggregated evaluation metrics for {var}")
+
+            # Attach dimension scales
+            time_ds.make_scale('time')
+            metric_ds.make_scale('metric')
+            out_ds.dims[0].attach_scale(time_ds)
+            out_ds.dims[1].attach_scale(metric_ds)
+
+            out_datasets[var] = out_ds
+
+        # Process each variable
+        for var in variables:
+            time_offset = 0
+            for run_date in common_dates:
+                source_file = source_files[run_date]
+                test_file = test_files[run_date]
+
+                with h5py.File(source_file, 'r') as h5s, h5py.File(test_file, 'r') as h5t:
+                    source_ds = h5s[var]
+                    test_ds = h5t[var]
+
+                    # Check spatial dimensions match
+                    if source_ds.shape[1:] != test_ds.shape[1:]:
+                        raise ValueError(
+                            f"Spatial shape mismatch for {var} on {run_date.isoformat()}: "
+                            f"source {source_ds.shape[1:]} vs test {test_ds.shape[1:]}"
+                        )
+
+                    n_timesteps = min(source_ds.shape[0], test_ds.shape[0])
+                    shape = (n_timesteps, source_ds.shape[1], source_ds.shape[2])
+                    source_chunks = source_ds.chunks or source_ds.shape
+                    test_chunks = test_ds.chunks or test_ds.shape
+
+                    # Target chunks: 1 timestep, full spatial extent
+                    target_chunks = (1, shape[1], shape[2])
+
+                    source_rechunker = rechunkit.rechunker(
+                        lambda idx: source_ds[idx],
+                        shape,
+                        source_ds.dtype,
+                        source_ds.dtype.itemsize,
+                        source_chunks,
+                        target_chunks,
+                        max_memory_bytes,
+                    )
+                    test_rechunker = rechunkit.rechunker(
+                        lambda idx: test_ds[idx],
+                        shape,
+                        test_ds.dtype,
+                        test_ds.dtype.itemsize,
+                        test_chunks,
+                        target_chunks,
+                        max_memory_bytes,
+                    )
+
+                    # Accumulate data for this file to compute domain metrics
+                    for (source_slices, source_data), (_, test_data) in zip(
+                        source_rechunker, test_rechunker
+                    ):
+                        # Apply spatial subsetting if using lat/lon bounds
+                        if y_slice != slice(None) or x_slice != slice(None):
+                            source_data = source_data[:, y_slice, x_slice]
+                            test_data = test_data[:, y_slice, x_slice]
+
+                        # Compute domain-aggregated metrics
+                        out_time_start = time_offset + source_slices[0].start
+                        out_time_stop = time_offset + source_slices[0].stop
+
+                        for metric in metrics:
+                            if metric == 'ne':
+                                result = compute_ne_domain(source_data, test_data, spatial_mask, epsilon)
+                            elif metric == 'ane':
+                                result = compute_ane_domain(source_data, test_data, spatial_mask, epsilon)
+                            elif metric == 'rmse':
+                                result = compute_rmse_domain(source_data, test_data, spatial_mask)
+
+                            metric_idx = metric_indices[metric]
+                            out_datasets[var][out_time_start:out_time_stop, metric_idx] = result
+
+                    time_offset += n_timesteps
+
+    return output_path
+
+
+def evaluate_cyclones(
+    source_path: Union[str, pathlib.Path],
+    test_path: Union[str, pathlib.Path],
+    output_path: Union[str, pathlib.Path],
+    variables: list[str],
+    metrics: Union[str, list[str]] = 'ne',
+    start_lat: float = None,
+    start_lon: float = None,
+    search_radius_km: float = 500.0,
+    pressure_threshold_pa: float = 400.0,
+    max_cyclone_radius_km: float = 1000.0,
+    smoothing_sigma: float = None,
+    epsilon: float = 1e-10,
+) -> pathlib.Path:
+    """
+    Evaluate two WRF models containing the same cyclone.
+
+    Tracks the cyclone independently in both source and test models, then computes
+    domain-aggregated metrics over each model's own cyclone region. This allows
+    comparison of cyclone characteristics even when positions differ.
+
+    The function outputs:
+    - Track data for both models (lat, lon, central_pressure, radius per timestep)
+    - Track comparison metrics (position difference, pressure difference, radius difference)
+    - Domain-aggregated evaluation metrics for specified variables
+
+    Parameters
+    ----------
+    source_path : str or pathlib.Path
+        Path to source/reference WRF output file.
+    test_path : str or pathlib.Path
+        Path to test WRF output file to evaluate.
+    output_path : str or pathlib.Path
+        Path for output NetCDF4 file.
+    variables : list[str]
+        List of WRF variable names to evaluate (e.g., ['RAINNC', 'T2', 'U10']).
+    metrics : str or list[str]
+        Metric(s) to compute. Available: 'ne', 'ane', 'rmse'. Default is 'ne'.
+    start_lat : float, optional
+        Initial search latitude for cyclone tracking. If None, uses global
+        pressure minimum at t=0.
+    start_lon : float, optional
+        Initial search longitude for cyclone tracking.
+    search_radius_km : float
+        Radius in km to search for pressure minimum at each timestep.
+        Default is 500 km.
+    pressure_threshold_pa : float
+        Pressure increase from center that defines cyclone edge.
+        Default is 400 Pa (4 hPa).
+    max_cyclone_radius_km : float
+        Maximum cyclone radius to consider. Default is 1000 km.
+    smoothing_sigma : float, optional
+        Standard deviation for Gaussian smoothing of SLP field.
+        If None, no smoothing is applied.
+    epsilon : float
+        Small value to avoid division by zero. Default is 1e-10.
+
+    Returns
+    -------
+    pathlib.Path
+        Path to the output file.
+
+    Notes
+    -----
+    Output NetCDF4 structure:
+        Dimensions: time, metric
+
+        Cyclone track variables (shape: time):
+            source_latitude, source_longitude, source_pressure, source_radius
+            test_latitude, test_longitude, test_pressure, test_radius
+
+        Track comparison variables (shape: time):
+            position_difference_km  - Distance between cyclone centers
+            pressure_difference     - Test pressure minus source pressure (Pa)
+            radius_difference       - Test radius minus source radius (km)
+
+        Evaluation variables (shape: time, metric):
+            {variable}  - Domain-aggregated metrics for each variable
+
+    The evaluation uses each model's own cyclone region:
+    - Source data is aggregated over the source cyclone area
+    - Test data is aggregated over the test cyclone area
+    - Metrics compare these aggregated values
+    """
+    source_path = pathlib.Path(source_path)
+    test_path = pathlib.Path(test_path)
+    output_path = pathlib.Path(output_path)
+
+    if not source_path.exists():
+        raise FileNotFoundError(f"Source file not found: {source_path}")
+    if not test_path.exists():
+        raise FileNotFoundError(f"Test file not found: {test_path}")
+
+    # Normalize metrics to a list
+    if isinstance(metrics, str):
+        metrics = [metrics]
+    metrics = [m.lower() for m in metrics]
+
+    for m in metrics:
+        if m not in AVAILABLE_DOMAIN_METRICS:
+            raise ValueError(f"Unknown metric '{m}'. Available: {AVAILABLE_DOMAIN_METRICS}")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Import gaussian_filter only if smoothing is requested
+    if smoothing_sigma is not None:
+        from scipy.ndimage import gaussian_filter
+
+    with h5py.File(source_path, 'r') as h5s, h5py.File(test_path, 'r') as h5t:
+        # Validate required variables for SLP calculation
+        required_vars = ['PSFC', 'HGT', 'T2', 'XLAT', 'XLONG']
+        for var in required_vars:
+            if var not in h5s:
+                raise ValueError(f"Required variable '{var}' not found in {source_path}")
+            if var not in h5t:
+                raise ValueError(f"Required variable '{var}' not found in {test_path}")
+
+        # Validate evaluation variables
+        for var in variables:
+            if var not in h5s:
+                raise ValueError(f"Variable '{var}' not found in {source_path}")
+            if var not in h5t:
+                raise ValueError(f"Variable '{var}' not found in {test_path}")
+
+        # Get dimensions
+        n_times_source = h5s['PSFC'].shape[0]
+        n_times_test = h5t['PSFC'].shape[0]
+        n_times = min(n_times_source, n_times_test)
+
+        # Get grids (use first timestep, typically constant)
+        xlat_s = h5s['XLAT'][0, :, :]
+        xlong_s = h5s['XLONG'][0, :, :]
+        xlat_t = h5t['XLAT'][0, :, :]
+        xlong_t = h5t['XLONG'][0, :, :]
+
+        # Get terrain height (time-invariant)
+        hgt_s = h5s['HGT'][0, :, :] if h5s['HGT'].ndim == 3 else h5s['HGT'][:, :]
+        hgt_t = h5t['HGT'][0, :, :] if h5t['HGT'].ndim == 3 else h5t['HGT'][:, :]
+
+        has_q2_s = 'Q2' in h5s
+        has_q2_t = 'Q2' in h5t
+
+        # Get time strings if available
+        time_values = []
+        if 'Times' in h5s:
+            times_data = h5s['Times'][:n_times]
+            for t_row in times_data:
+                if isinstance(t_row, (bytes, str)):
+                    t_str = t_row.decode('utf-8') if isinstance(t_row, bytes) else t_row
+                else:
+                    t_str = b"".join(t_row).decode('utf-8')
+                t_str = t_str.replace('_', 'T')
+                try:
+                    dt = np.datetime64(t_str)
+                    hours = (dt - np.datetime64('1970-01-01')) / np.timedelta64(1, 'h')
+                    time_values.append(hours)
+                except ValueError:
+                    time_values.append(np.nan)
+
+        time_values = np.array(time_values, dtype='f8') if time_values else None
+
+        # Track cyclones and compute metrics
+        source_positions = []
+        test_positions = []
+        current_lat_s = start_lat
+        current_lon_s = start_lon
+        current_lat_t = start_lat
+        current_lon_t = start_lon
+
+        # Storage for metrics
+        n_metrics = len(metrics)
+        var_results = {var: np.zeros((n_times, n_metrics), dtype=np.float32) for var in variables}
+
+        for t in range(n_times):
+            # --- Track source cyclone ---
+            psfc_s = h5s['PSFC'][t, :, :]
+            t2_s = h5s['T2'][t, :, :]
+            q2_s = h5s['Q2'][t, :, :] if has_q2_s else None
+
+            slp_s = _compute_sea_level_pressure(psfc_s, hgt_s, t2_s, q2_s)
+            if smoothing_sigma is not None:
+                slp_s = gaussian_filter(slp_s, sigma=smoothing_sigma)
+
+            if t == 0 and current_lat_s is None:
+                y_idx_s, x_idx_s, min_p_s = _find_pressure_minimum(slp_s, xlat_s, xlong_s)
+            else:
+                y_idx_s, x_idx_s, min_p_s = _find_pressure_minimum(
+                    slp_s, xlat_s, xlong_s,
+                    search_lat=current_lat_s,
+                    search_lon=current_lon_s,
+                    search_radius_km=search_radius_km,
+                )
+
+            center_lat_s = float(xlat_s[y_idx_s, x_idx_s])
+            center_lon_s = float(xlong_s[y_idx_s, x_idx_s])
+
+            radius_s = _estimate_cyclone_radius(
+                slp_s, xlat_s, xlong_s, y_idx_s, x_idx_s,
+                pressure_threshold_pa=pressure_threshold_pa,
+                max_radius_km=max_cyclone_radius_km,
+            )
+
+            source_positions.append(CyclonePosition(
+                time_index=t,
+                y_index=y_idx_s,
+                x_index=x_idx_s,
+                latitude=center_lat_s,
+                longitude=center_lon_s,
+                central_pressure=min_p_s,
+                radius_km=radius_s,
+            ))
+
+            current_lat_s = center_lat_s
+            current_lon_s = center_lon_s
+
+            # --- Track test cyclone ---
+            psfc_t = h5t['PSFC'][t, :, :]
+            t2_t = h5t['T2'][t, :, :]
+            q2_t = h5t['Q2'][t, :, :] if has_q2_t else None
+
+            slp_t = _compute_sea_level_pressure(psfc_t, hgt_t, t2_t, q2_t)
+            if smoothing_sigma is not None:
+                slp_t = gaussian_filter(slp_t, sigma=smoothing_sigma)
+
+            if t == 0 and current_lat_t is None:
+                y_idx_t, x_idx_t, min_p_t = _find_pressure_minimum(slp_t, xlat_t, xlong_t)
+            else:
+                y_idx_t, x_idx_t, min_p_t = _find_pressure_minimum(
+                    slp_t, xlat_t, xlong_t,
+                    search_lat=current_lat_t,
+                    search_lon=current_lon_t,
+                    search_radius_km=search_radius_km,
+                )
+
+            center_lat_t = float(xlat_t[y_idx_t, x_idx_t])
+            center_lon_t = float(xlong_t[y_idx_t, x_idx_t])
+
+            radius_t = _estimate_cyclone_radius(
+                slp_t, xlat_t, xlong_t, y_idx_t, x_idx_t,
+                pressure_threshold_pa=pressure_threshold_pa,
+                max_radius_km=max_cyclone_radius_km,
+            )
+
+            test_positions.append(CyclonePosition(
+                time_index=t,
+                y_index=y_idx_t,
+                x_index=x_idx_t,
+                latitude=center_lat_t,
+                longitude=center_lon_t,
+                central_pressure=min_p_t,
+                radius_km=radius_t,
+            ))
+
+            current_lat_t = center_lat_t
+            current_lon_t = center_lon_t
+
+            # --- Create masks for cyclone regions ---
+            distances_s = _grid_distances_km(xlat_s, xlong_s, center_lat_s, center_lon_s)
+            mask_s = distances_s <= radius_s
+
+            distances_t = _grid_distances_km(xlat_t, xlong_t, center_lat_t, center_lon_t)
+            mask_t = distances_t <= radius_t
+
+            # --- Compute metrics for each variable ---
+            for var in variables:
+                source_data = h5s[var][t:t+1, :, :]  # Shape (1, y, x)
+                test_data = h5t[var][t:t+1, :, :]
+
+                for m_idx, metric in enumerate(metrics):
+                    if metric == 'ne':
+                        # Aggregate each over its own mask, then compute NE
+                        source_sum = np.sum(np.where(mask_s, source_data[0], 0.0))
+                        test_sum = np.sum(np.where(mask_t, test_data[0], 0.0))
+                        if np.abs(source_sum) < epsilon:
+                            result = 0.0
+                        else:
+                            result = ((test_sum - source_sum) / source_sum) * 100
+                    elif metric == 'ane':
+                        source_sum = np.sum(np.where(mask_s, source_data[0], 0.0))
+                        test_sum = np.sum(np.where(mask_t, test_data[0], 0.0))
+                        if np.abs(source_sum) < epsilon:
+                            result = 0.0
+                        else:
+                            result = np.abs((test_sum - source_sum) / source_sum) * 100
+                    elif metric == 'rmse':
+                        # For RMSE, compute mean over each region then difference
+                        n_cells_s = np.sum(mask_s)
+                        n_cells_t = np.sum(mask_t)
+                        source_mean = np.sum(np.where(mask_s, source_data[0], 0.0)) / max(n_cells_s, 1)
+                        test_mean = np.sum(np.where(mask_t, test_data[0], 0.0)) / max(n_cells_t, 1)
+                        result = np.abs(test_mean - source_mean)
+
+                    var_results[var][t, m_idx] = result
+
+    # --- Write output file ---
+    with h5py.File(output_path, 'w') as h5out:
+        # Global attributes
+        h5out.attrs['Conventions'] = np.bytes_('CF-1.8')
+        h5out.attrs['history'] = np.bytes_(f'Created {datetime.now().isoformat()} by model_eval')
+        h5out.attrs['source_file'] = np.bytes_(str(source_path))
+        h5out.attrs['test_file'] = np.bytes_(str(test_path))
+        h5out.attrs['evaluation_type'] = np.bytes_('cyclone')
+
+        # Create time dimension
+        time_ds = _make_netcdf4_dimension(h5out, 'time', n_times, data=time_values)
+        time_ds.attrs['units'] = np.bytes_('hours since 1970-01-01')
+        time_ds.attrs['calendar'] = np.bytes_('proleptic_gregorian')
+        time_ds.attrs['standard_name'] = np.bytes_('time')
+
+        # Create metric dimension
+        n_metrics = len(metrics)
+        metric_ds = h5out.create_dataset('metric', data=np.arange(n_metrics, dtype=np.int32))
+        metric_ds.attrs[CLASS] = np.bytes_('DIMENSION_SCALE')
+        metric_ds.attrs[NAME] = np.bytes_('metric')
+        metric_ds.attrs['long_name'] = np.bytes_('Evaluation metric index')
+        metric_ds.attrs['flag_values'] = np.arange(n_metrics, dtype=np.int32)
+        metric_ds.attrs['flag_meanings'] = np.bytes_(' '.join(metrics))
+
+        # --- Source track variables ---
+        source_lat_ds = h5out.create_dataset(
+            'source_latitude',
+            data=np.array([p.latitude for p in source_positions], dtype=np.float32),
+        )
+        source_lat_ds.attrs['units'] = np.bytes_('degrees_north')
+        source_lat_ds.attrs['long_name'] = np.bytes_('Source cyclone center latitude')
+        time_ds.make_scale('time')
+        source_lat_ds.dims[0].attach_scale(time_ds)
+
+        source_lon_ds = h5out.create_dataset(
+            'source_longitude',
+            data=np.array([p.longitude for p in source_positions], dtype=np.float32),
+        )
+        source_lon_ds.attrs['units'] = np.bytes_('degrees_east')
+        source_lon_ds.attrs['long_name'] = np.bytes_('Source cyclone center longitude')
+        source_lon_ds.dims[0].attach_scale(time_ds)
+
+        source_pressure_ds = h5out.create_dataset(
+            'source_pressure',
+            data=np.array([p.central_pressure for p in source_positions], dtype=np.float32),
+        )
+        source_pressure_ds.attrs['units'] = np.bytes_('Pa')
+        source_pressure_ds.attrs['long_name'] = np.bytes_('Source cyclone central sea level pressure')
+        source_pressure_ds.dims[0].attach_scale(time_ds)
+
+        source_radius_ds = h5out.create_dataset(
+            'source_radius',
+            data=np.array([p.radius_km for p in source_positions], dtype=np.float32),
+        )
+        source_radius_ds.attrs['units'] = np.bytes_('km')
+        source_radius_ds.attrs['long_name'] = np.bytes_('Source cyclone radius')
+        source_radius_ds.dims[0].attach_scale(time_ds)
+
+        # --- Test track variables ---
+        test_lat_ds = h5out.create_dataset(
+            'test_latitude',
+            data=np.array([p.latitude for p in test_positions], dtype=np.float32),
+        )
+        test_lat_ds.attrs['units'] = np.bytes_('degrees_north')
+        test_lat_ds.attrs['long_name'] = np.bytes_('Test cyclone center latitude')
+        test_lat_ds.dims[0].attach_scale(time_ds)
+
+        test_lon_ds = h5out.create_dataset(
+            'test_longitude',
+            data=np.array([p.longitude for p in test_positions], dtype=np.float32),
+        )
+        test_lon_ds.attrs['units'] = np.bytes_('degrees_east')
+        test_lon_ds.attrs['long_name'] = np.bytes_('Test cyclone center longitude')
+        test_lon_ds.dims[0].attach_scale(time_ds)
+
+        test_pressure_ds = h5out.create_dataset(
+            'test_pressure',
+            data=np.array([p.central_pressure for p in test_positions], dtype=np.float32),
+        )
+        test_pressure_ds.attrs['units'] = np.bytes_('Pa')
+        test_pressure_ds.attrs['long_name'] = np.bytes_('Test cyclone central sea level pressure')
+        test_pressure_ds.dims[0].attach_scale(time_ds)
+
+        test_radius_ds = h5out.create_dataset(
+            'test_radius',
+            data=np.array([p.radius_km for p in test_positions], dtype=np.float32),
+        )
+        test_radius_ds.attrs['units'] = np.bytes_('km')
+        test_radius_ds.attrs['long_name'] = np.bytes_('Test cyclone radius')
+        test_radius_ds.dims[0].attach_scale(time_ds)
+
+        # --- Track comparison variables ---
+        position_diff = np.array([
+            _haversine_distance(
+                source_positions[t].latitude, source_positions[t].longitude,
+                test_positions[t].latitude, test_positions[t].longitude
+            )
+            for t in range(n_times)
+        ], dtype=np.float32)
+
+        pos_diff_ds = h5out.create_dataset('position_difference_km', data=position_diff)
+        pos_diff_ds.attrs['units'] = np.bytes_('km')
+        pos_diff_ds.attrs['long_name'] = np.bytes_('Distance between cyclone centers')
+        pos_diff_ds.dims[0].attach_scale(time_ds)
+
+        pressure_diff = np.array([
+            test_positions[t].central_pressure - source_positions[t].central_pressure
+            for t in range(n_times)
+        ], dtype=np.float32)
+
+        pressure_diff_ds = h5out.create_dataset('pressure_difference', data=pressure_diff)
+        pressure_diff_ds.attrs['units'] = np.bytes_('Pa')
+        pressure_diff_ds.attrs['long_name'] = np.bytes_('Test minus source central pressure')
+        pressure_diff_ds.dims[0].attach_scale(time_ds)
+
+        radius_diff = np.array([
+            test_positions[t].radius_km - source_positions[t].radius_km
+            for t in range(n_times)
+        ], dtype=np.float32)
+
+        radius_diff_ds = h5out.create_dataset('radius_difference', data=radius_diff)
+        radius_diff_ds.attrs['units'] = np.bytes_('km')
+        radius_diff_ds.attrs['long_name'] = np.bytes_('Test minus source cyclone radius')
+        radius_diff_ds.dims[0].attach_scale(time_ds)
+
+        # --- Evaluation metric variables ---
+        for var in variables:
+            out_ds = h5out.create_dataset(
+                var,
+                data=var_results[var],
+                dtype=np.float32,
+                compression='gzip',
+                compression_opts=4,
+            )
+            out_ds.attrs['long_name'] = np.bytes_(f'Cyclone-region aggregated metrics for {var}')
+            time_ds.make_scale('time')
+            metric_ds.make_scale('metric')
+            out_ds.dims[0].attach_scale(time_ds)
+            out_ds.dims[1].attach_scale(metric_ds)
 
     return output_path

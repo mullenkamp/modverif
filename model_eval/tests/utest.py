@@ -27,7 +27,14 @@ output_path = export_path.joinpath('results1.nc')
 
 domain = 4
 
-variables = ['Q2', 'PREC_ACC_NC', 'T2', 'U10', 'V10', ]
+variables = ['Q2', 'T2', 'U10', 'V10', 'PREC_ACC_NC']
+region = (-46.5, -45.0, 166.5, 169.5)
+start_lat = -36.824549
+start_lon = 176.240509
+
+cyc_path = '/home/mike/data/wrf/tests/physics_tests/2023-02-10/d03_SMS-3DTKE/wrfout_d03_2023-02-13_00:00:00.nc'
+
+plot_path = export_path.joinpath('plots')
 
 #################################################
 ### Tests
@@ -82,15 +89,20 @@ for var in variables:
 
 
 
-results_path = evaluate_models(source_path, test_path, output_path, domain, variables)
+results_path = evaluate_models(source_path, test_path, output_path, domain, variables, region=region)
 
 
+positions = track_cyclone(
+    cyc_path,
+    start_lat=start_lat,
+    start_lon=start_lon,
+    smoothing_sigma=5,
+)
+
+png_files = plot_cyclone_track(cyc_path, positions, plot_path)
 
 
-
-
-
-
+results_path = evaluate_models_domain(source_path, test_path, output_path, domain, variables, region=region)
 
 
 
