@@ -368,7 +368,7 @@ class TestEvaluateModels:
 
             # Check dimension attributes
             assert f['time'].attrs['CLASS'] == b'DIMENSION_SCALE'
-            assert f['time'].attrs['units'] == b'days since 1970-01-01'
+            assert f['time'].attrs['units'] == b'hours since 1970-01-01'
 
             # Check variable attributes
             assert f['T2_ne'].attrs['units'] == b'percent'

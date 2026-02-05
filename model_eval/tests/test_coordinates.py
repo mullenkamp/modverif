@@ -24,7 +24,15 @@ def create_mock_wrfout_with_coords(path, variables, shape, dx=1000.0, dy=1000.0,
         
         # Times dataset: (Time, 19)
         times = [b"2020-09-30_00:00:00", b"2020-09-30_01:00:00"]
-        times_arr = np.array([list(t.ljust(19)) for t in times], dtype='S1')
+        times_data = []
+        for t in times:
+            # Pad with null bytes or spaces, usually spaces for WRF
+            t_padded = t.ljust(19)
+            # Create list of single-char bytes: [b'2', b'0', b'2', b'0', ...]
+            row = [bytes([c]) for c in t_padded]
+            times_data.append(row)
+        
+        times_arr = np.array(times_data, dtype='S1')
         f.create_dataset('Times', data=times_arr)
         
         for var in variables:
@@ -64,9 +72,16 @@ class TestCoordinates:
             np.testing.assert_array_equal(f['x'][:], np.arange(5) * dx)
             np.testing.assert_array_equal(f['y'][:], np.arange(5) * dy)
 
-            # Check time values (days since 1970-01-01)
-            # 2020-09-30 is 18535 days since 1970-01-01
+            # Check time values (hours since 1970-01-01)
+            assert f['time'].attrs['units'] == b'hours since 1970-01-01'
+            
             dt = np.datetime64('2020-09-30T00:00:00')
-            expected_day = (dt - np.datetime64('1970-01-01')) / np.timedelta64(1, 'D')
-            assert f['time'][0] == expected_day
-            assert f['time'][1] == expected_day + 1/24.0
+            expected_hour = (dt - np.datetime64('1970-01-01')) / np.timedelta64(1, 'h')
+            assert f['time'][0] == expected_hour
+            assert f['time'][1] == expected_hour + 1.0
+
+            # Check Times variable
+            assert 'Times' in f
+            times_out = f['Times'][:]
+            t0 = b"".join(times_out[0]).decode('utf-8')
+            assert t0.startswith("2020-09-30_00:00:00")
