@@ -8,7 +8,7 @@ import h5py
 import numpy as np
 import pytest
 
-from model_eval.io import NetCDF4Writer, WRFFile
+from model_eval.wrfio import NetCDF4Writer, WRFFile
 
 
 class TestWRFFile:
