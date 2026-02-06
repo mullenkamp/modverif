@@ -9,6 +9,7 @@ import pytest
 
 def pytest_addoption(parser):
     """Add custom command-line options for test configuration."""
+    # Folder-based options (for evaluate_models_cell, evaluate_models_domain)
     parser.addoption(
         "--source-folder",
         action="store",
@@ -46,6 +47,41 @@ def pytest_addoption(parser):
         help="End date for evaluation (ISO format, e.g., 2020-10-15)",
     )
 
+    # File-based options (for evaluate_cyclones)
+    parser.addoption(
+        "--source-file",
+        action="store",
+        default=None,
+        help="Path to source WRF file for cyclone integration tests",
+    )
+    parser.addoption(
+        "--test-file",
+        action="store",
+        default=None,
+        help="Path to test WRF file for cyclone integration tests",
+    )
+    parser.addoption(
+        "--cyclone-start-lat",
+        action="store",
+        default=None,
+        help="Initial cyclone search latitude",
+    )
+    parser.addoption(
+        "--cyclone-start-lon",
+        action="store",
+        default=None,
+        help="Initial cyclone search longitude",
+    )
+
+
+def pytest_configure(config):
+    """Register custom markers."""
+    config.addinivalue_line(
+        "markers", "cyclone: mark test as requiring cyclone data"
+    )
+
+
+# Folder-based fixtures
 
 @pytest.fixture
 def source_folder(request):
@@ -114,3 +150,53 @@ def real_model_paths(source_folder, test_folder):
     if source_folder is None or test_folder is None:
         pytest.skip("Real model paths not provided. Use --source-folder and --test-folder.")
     return source_folder, test_folder
+
+
+# File-based fixtures (for cyclone tests)
+
+@pytest.fixture
+def source_file(request):
+    """Fixture providing the source file path for cyclone tests."""
+    path = request.config.getoption("--source-file")
+    if path is not None:
+        return pathlib.Path(path)
+    return None
+
+
+@pytest.fixture
+def test_file(request):
+    """Fixture providing the test file path for cyclone tests."""
+    path = request.config.getoption("--test-file")
+    if path is not None:
+        return pathlib.Path(path)
+    return None
+
+
+@pytest.fixture
+def cyclone_start_lat(request):
+    """Fixture providing initial cyclone search latitude."""
+    val = request.config.getoption("--cyclone-start-lat")
+    if val is not None:
+        return float(val)
+    return None
+
+
+@pytest.fixture
+def cyclone_start_lon(request):
+    """Fixture providing initial cyclone search longitude."""
+    val = request.config.getoption("--cyclone-start-lon")
+    if val is not None:
+        return float(val)
+    return None
+
+
+@pytest.fixture
+def real_cyclone_files(source_file, test_file):
+    """
+    Fixture that provides real cyclone file paths if configured.
+
+    Skips test if paths are not provided.
+    """
+    if source_file is None or test_file is None:
+        pytest.skip("Real cyclone files not provided. Use --source-file and --test-file.")
+    return source_file, test_file

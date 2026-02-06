@@ -18,6 +18,7 @@ from model_eval.evaluate import (
     compute_ne_domain,
     compute_rmse_domain,
     compute_rse,
+    evaluate_cyclones,
     evaluate_models_cell,
     evaluate_models_domain,
     find_wrfout_files,
@@ -1700,3 +1701,364 @@ class TestEvaluateModelsDomainIntegration:
             if "No grid cells found within bounds" in str(e):
                 pytest.skip("Test domain does not cover Southland region")
             raise
+
+
+class TestEvaluateCyclones:
+    """Unit tests for evaluate_cyclones function."""
+
+    @pytest.fixture
+    def mock_cyclone_files(self, tmp_path):
+        """Create mock WRF files with cyclone-like pressure patterns."""
+        n_times = 5
+        n_y = 50
+        n_x = 60
+
+        # Create lat/lon grids centered around a test region
+        lats = np.linspace(-48, -42, n_y)
+        lons = np.linspace(165, 175, n_x)
+        lon_grid, lat_grid = np.meshgrid(lons, lats)
+
+        # Cyclone center moves over time
+        cyclone_lats = [-46.0, -45.8, -45.5, -45.2, -45.0]
+        cyclone_lons = [168.0, 168.5, 169.0, 169.5, 170.0]
+
+        for name, lat_offset, lon_offset in [('source', 0, 0), ('test', 0.2, 0.3)]:
+            filepath = tmp_path / f"wrfout_{name}.nc"
+            with h5py.File(filepath, 'w') as f:
+                # Global attributes
+                f.attrs['DX'] = 10000.0
+                f.attrs['DY'] = 10000.0
+
+                # Coordinate grids
+                xlat_data = np.broadcast_to(lat_grid, (n_times, n_y, n_x)).copy()
+                xlong_data = np.broadcast_to(lon_grid, (n_times, n_y, n_x)).copy()
+                f.create_dataset('XLAT', data=xlat_data.astype(np.float32))
+                f.create_dataset('XLONG', data=xlong_data.astype(np.float32))
+
+                # Terrain height (flat for simplicity)
+                hgt_data = np.zeros((n_times, n_y, n_x), dtype=np.float32)
+                f.create_dataset('HGT', data=hgt_data)
+
+                # Create pressure field with cyclone minimum
+                psfc_data = np.zeros((n_times, n_y, n_x), dtype=np.float32)
+                t2_data = np.full((n_times, n_y, n_x), 285.0, dtype=np.float32)
+
+                for t in range(n_times):
+                    # Background pressure
+                    psfc_data[t, :, :] = 101325.0
+
+                    # Add cyclone depression (offset for test file)
+                    center_lat = cyclone_lats[t] + lat_offset
+                    center_lon = cyclone_lons[t] + lon_offset
+
+                    # Distance from center
+                    dlat = lat_grid - center_lat
+                    dlon = lon_grid - center_lon
+                    dist = np.sqrt(dlat**2 + (dlon * np.cos(np.radians(center_lat)))**2)
+
+                    # Pressure depression (Gaussian-like)
+                    pressure_drop = 2000 * np.exp(-dist**2 / (2 * 2**2))  # 20 hPa drop
+                    psfc_data[t, :, :] -= pressure_drop
+
+                f.create_dataset('PSFC', data=psfc_data)
+                f.create_dataset('T2', data=t2_data)
+
+                # Add a test variable (e.g., rainfall)
+                rainnc = np.random.uniform(0, 10, (n_times, n_y, n_x)).astype(np.float32)
+                f.create_dataset('RAINNC', data=rainnc)
+
+                # Times variable
+                times = [f'2020-01-01_{t:02d}:00:00' for t in range(n_times)]
+                max_len = max(len(t) for t in times)
+                times_data = np.array(
+                    [[c.encode() for c in t.ljust(max_len)] for t in times], dtype='S1'
+                )
+                f.create_dataset('Times', data=times_data)
+
+        return tmp_path / "wrfout_source.nc", tmp_path / "wrfout_test.nc"
+
+    def test_evaluate_cyclones_basic(self, mock_cyclone_files, tmp_path):
+        """Test basic cyclone evaluation."""
+        source_file, test_file = mock_cyclone_files
+        output_path = tmp_path / 'cyclone_eval.nc'
+
+        result = evaluate_cyclones(
+            source_file,
+            test_file,
+            output_path,
+            variables=['RAINNC'],
+            metrics=['ne', 'ane'],
+            start_lat=-46.0,
+            start_lon=168.0,
+        )
+
+        assert result.exists()
+
+        with h5py.File(result, 'r') as f:
+            # Check track variables exist
+            assert 'source_latitude' in f
+            assert 'source_longitude' in f
+            assert 'source_pressure' in f
+            assert 'source_radius' in f
+            assert 'test_latitude' in f
+            assert 'test_longitude' in f
+            assert 'test_pressure' in f
+            assert 'test_radius' in f
+
+            # Check comparison variables
+            assert 'position_difference_km' in f
+            assert 'pressure_difference' in f
+            assert 'radius_difference' in f
+
+            # Check evaluation variable
+            assert 'RAINNC' in f
+            assert f['RAINNC'].shape == (5, 2)  # (n_times, n_metrics)
+
+            # Check dimensions
+            assert 'time' in f
+            assert 'metric' in f
+            assert f['metric'].attrs['flag_meanings'] == b'ne ane'
+
+    def test_evaluate_cyclones_all_metrics(self, mock_cyclone_files, tmp_path):
+        """Test cyclone evaluation with all available metrics."""
+        source_file, test_file = mock_cyclone_files
+        output_path = tmp_path / 'cyclone_eval_all.nc'
+
+        result = evaluate_cyclones(
+            source_file,
+            test_file,
+            output_path,
+            variables=['RAINNC'],
+            metrics=list(AVAILABLE_DOMAIN_METRICS),
+            start_lat=-46.0,
+            start_lon=168.0,
+        )
+
+        with h5py.File(result, 'r') as f:
+            assert f['RAINNC'].shape[1] == len(AVAILABLE_DOMAIN_METRICS)
+
+    def test_evaluate_cyclones_tracks_independently(self, mock_cyclone_files, tmp_path):
+        """Test that cyclones are tracked independently in source and test."""
+        source_file, test_file = mock_cyclone_files
+        output_path = tmp_path / 'cyclone_eval.nc'
+
+        result = evaluate_cyclones(
+            source_file,
+            test_file,
+            output_path,
+            variables=['RAINNC'],
+            start_lat=-46.0,
+            start_lon=168.0,
+        )
+
+        with h5py.File(result, 'r') as f:
+            source_lats = f['source_latitude'][:]
+            test_lats = f['test_latitude'][:]
+            source_lons = f['source_longitude'][:]
+            test_lons = f['test_longitude'][:]
+
+            # Tracks should be different (test has offset)
+            assert not np.allclose(source_lats, test_lats, atol=0.1)
+            assert not np.allclose(source_lons, test_lons, atol=0.1)
+
+            # Position difference should be non-zero
+            pos_diff = f['position_difference_km'][:]
+            assert np.all(pos_diff > 0)
+
+    def test_evaluate_cyclones_with_smoothing(self, mock_cyclone_files, tmp_path):
+        """Test cyclone evaluation with SLP smoothing."""
+        source_file, test_file = mock_cyclone_files
+        output_path = tmp_path / 'cyclone_eval_smooth.nc'
+
+        result = evaluate_cyclones(
+            source_file,
+            test_file,
+            output_path,
+            variables=['RAINNC'],
+            start_lat=-46.0,
+            start_lon=168.0,
+            smoothing_sigma=2.0,
+        )
+
+        assert result.exists()
+
+    def test_evaluate_cyclones_file_not_found(self, tmp_path):
+        """Test that FileNotFoundError is raised for missing files."""
+        with pytest.raises(FileNotFoundError):
+            evaluate_cyclones(
+                tmp_path / "nonexistent_source.nc",
+                tmp_path / "nonexistent_test.nc",
+                tmp_path / "output.nc",
+                variables=['T2'],
+            )
+
+    def test_evaluate_cyclones_invalid_metric(self, mock_cyclone_files, tmp_path):
+        """Test that ValueError is raised for invalid metric."""
+        source_file, test_file = mock_cyclone_files
+
+        with pytest.raises(ValueError, match="Unknown metric"):
+            evaluate_cyclones(
+                source_file,
+                test_file,
+                tmp_path / "output.nc",
+                variables=['RAINNC'],
+                metrics=['invalid_metric'],
+            )
+
+    def test_evaluate_cyclones_missing_variable(self, mock_cyclone_files, tmp_path):
+        """Test that ValueError is raised for missing variable."""
+        source_file, test_file = mock_cyclone_files
+
+        with pytest.raises(ValueError, match="not found"):
+            evaluate_cyclones(
+                source_file,
+                test_file,
+                tmp_path / "output.nc",
+                variables=['NONEXISTENT'],
+            )
+
+
+class TestEvaluateCyclonesIntegration:
+    """Integration tests for evaluate_cyclones using real WRF model data.
+
+    These tests are skipped unless --source-file and --test-file are provided.
+
+    Example usage:
+        pytest --source-file=/path/to/source.nc --test-file=/path/to/test.nc \\
+               --cyclone-start-lat=-45.0 --cyclone-start-lon=170.0 \\
+               --variables=RAINNC,T2
+    """
+
+    def test_real_data_cyclone_evaluation(
+        self, real_cyclone_files, variables, cyclone_start_lat, cyclone_start_lon, tmp_path
+    ):
+        """Test cyclone evaluation with real WRF model data."""
+        source_file, test_file = real_cyclone_files
+
+        output_path = tmp_path / 'real_cyclone_eval.nc'
+        result = evaluate_cyclones(
+            source_file,
+            test_file,
+            output_path,
+            variables=variables,
+            metrics=list(AVAILABLE_DOMAIN_METRICS),
+            start_lat=cyclone_start_lat,
+            start_lon=cyclone_start_lon,
+        )
+
+        assert result.exists()
+
+        with h5py.File(result, 'r') as f:
+            # Check track variables
+            assert 'source_latitude' in f
+            assert 'test_latitude' in f
+            assert 'position_difference_km' in f
+
+            n_times = f['time'].shape[0]
+            print(f"\nCyclone evaluation results:")
+            print(f"  Number of timesteps: {n_times}")
+
+            # Print track summary
+            source_lats = f['source_latitude'][:]
+            source_lons = f['source_longitude'][:]
+            source_pressure = f['source_pressure'][:]
+            test_lats = f['test_latitude'][:]
+            test_lons = f['test_longitude'][:]
+            pos_diff = f['position_difference_km'][:]
+
+            print(f"\n  Source cyclone track:")
+            print(f"    Lat range: {source_lats.min():.2f} to {source_lats.max():.2f}")
+            print(f"    Lon range: {source_lons.min():.2f} to {source_lons.max():.2f}")
+            print(f"    Pressure range: {source_pressure.min()/100:.1f} to {source_pressure.max()/100:.1f} hPa")
+
+            print(f"\n  Test cyclone track:")
+            print(f"    Lat range: {test_lats.min():.2f} to {test_lats.max():.2f}")
+            print(f"    Lon range: {test_lons.min():.2f} to {test_lons.max():.2f}")
+
+            print(f"\n  Position difference: {pos_diff.min():.1f} to {pos_diff.max():.1f} km")
+
+            # Print evaluation metrics for each variable
+            for var in variables:
+                if var in f:
+                    data = f[var][:]
+                    print(f"\n  {var} metrics:")
+                    for i, metric in enumerate(AVAILABLE_DOMAIN_METRICS):
+                        print(f"    {metric}: {data[:, i].min():.2f} to {data[:, i].max():.2f}")
+
+    def test_real_data_cyclone_tracking_consistency(
+        self, real_cyclone_files, cyclone_start_lat, cyclone_start_lon, tmp_path
+    ):
+        """Test that cyclone tracking produces consistent results."""
+        source_file, test_file = real_cyclone_files
+
+        # Run evaluation twice
+        output1 = tmp_path / 'cyclone_eval1.nc'
+        output2 = tmp_path / 'cyclone_eval2.nc'
+
+        evaluate_cyclones(
+            source_file,
+            test_file,
+            output1,
+            variables=['T2'],
+            start_lat=cyclone_start_lat,
+            start_lon=cyclone_start_lon,
+        )
+
+        evaluate_cyclones(
+            source_file,
+            test_file,
+            output2,
+            variables=['T2'],
+            start_lat=cyclone_start_lat,
+            start_lon=cyclone_start_lon,
+        )
+
+        # Results should be identical
+        with h5py.File(output1, 'r') as f1, h5py.File(output2, 'r') as f2:
+            np.testing.assert_array_equal(f1['source_latitude'][:], f2['source_latitude'][:])
+            np.testing.assert_array_equal(f1['source_longitude'][:], f2['source_longitude'][:])
+            np.testing.assert_array_equal(f1['T2'][:], f2['T2'][:])
+
+    def test_real_data_cyclone_with_smoothing(
+        self, real_cyclone_files, variables, cyclone_start_lat, cyclone_start_lon, tmp_path
+    ):
+        """Test cyclone evaluation with different smoothing levels."""
+        source_file, test_file = real_cyclone_files
+
+        results = {}
+        for sigma in [None, 1.0, 3.0]:
+            output_path = tmp_path / f'cyclone_sigma_{sigma}.nc'
+            evaluate_cyclones(
+                source_file,
+                test_file,
+                output_path,
+                variables=variables[:1],  # Just first variable
+                start_lat=cyclone_start_lat,
+                start_lon=cyclone_start_lon,
+                smoothing_sigma=sigma,
+            )
+            with h5py.File(output_path, 'r') as f:
+                results[sigma] = {
+                    'lats': f['source_latitude'][:].copy(),
+                    'pressure': f['source_pressure'][:].copy(),
+                }
+
+        print("\nSmoothing comparison:")
+        for sigma, data in results.items():
+            print(f"  sigma={sigma}:")
+            print(f"    Lat std: {np.std(data['lats']):.4f}")
+            print(f"    Pressure std: {np.std(data['pressure'])/100:.2f} hPa")
+
+    def test_real_data_required_variables_exist(self, real_cyclone_files):
+        """Test that required variables for SLP calculation exist."""
+        source_file, test_file = real_cyclone_files
+
+        required_vars = ['PSFC', 'HGT', 'T2', 'XLAT', 'XLONG']
+
+        for filepath in [source_file, test_file]:
+            with h5py.File(filepath, 'r') as f:
+                for var in required_vars:
+                    assert var in f, f"Required variable {var} not found in {filepath}"
+                print(f"\n{filepath.name}:")
+                print(f"  PSFC shape: {f['PSFC'].shape}")
+                print(f"  Has Q2: {'Q2' in f}")

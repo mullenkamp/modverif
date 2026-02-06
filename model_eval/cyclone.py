@@ -11,6 +11,8 @@ import numpy as np
 from matplotlib.patches import Circle
 from scipy.ndimage import gaussian_filter
 
+from model_eval.io import WRFFile
+
 try:
     import cartopy.crs as ccrs
     import cartopy.feature as cfeature
@@ -53,25 +55,13 @@ def _compute_sea_level_pressure(
     -------
     np.ndarray
         Estimated sea level pressure in Pa.
+
+    Notes
+    -----
+    This function is kept for backwards compatibility and internal use.
+    Prefer using WRFFile.get_slp() for reading from WRF files directly.
     """
-    # Use virtual temperature if moisture is available
-    if q2 is not None:
-        # Virtual temperature: Tv = T * (1 + 0.61 * q)
-        t_virtual = t2 * (1.0 + 0.61 * q2)
-    else:
-        t_virtual = t2
-
-    # Estimate temperature at sea level using standard lapse rate
-    # T_sl = T_surface + lapse_rate * height
-    t_sea_level = t_virtual + STANDARD_LAPSE_RATE * hgt
-
-    # Average temperature in the hypothetical air column
-    t_avg = 0.5 * (t_virtual + t_sea_level)
-
-    # Hypsometric equation: P_sl = P_sfc * exp(g * h / (R * T_avg))
-    slp = psfc * np.exp(GRAVITY * hgt / (GAS_CONSTANT_DRY * t_avg))
-
-    return slp
+    return WRFFile._compute_slp(psfc, hgt, t2, q2)
 
 
 @dataclass
@@ -352,70 +342,28 @@ def track_cyclone(
     ...     print(f"t={pos.time_index}: ({pos.latitude:.2f}, {pos.longitude:.2f}) "
     ...           f"SLP={pos.central_pressure/100:.1f} hPa, R={pos.radius_km:.0f} km")
     """
-    wrfout_path = pathlib.Path(wrfout_path)
-
-    if not wrfout_path.exists():
-        raise FileNotFoundError(f"WRF file not found: {wrfout_path}")
-
     positions = []
 
-    with h5py.File(wrfout_path, 'r') as f:
+    with WRFFile(wrfout_path) as wrf:
         # Validate required variables exist
         required_vars = ['PSFC', 'HGT', 'T2', 'XLAT', 'XLONG']
         for var in required_vars:
-            if var not in f:
+            if not wrf.has_variable(var):
                 raise ValueError(f"Required variable '{var}' not found in {wrfout_path}")
 
-        psfc_ds = f['PSFC']
-        t2_ds = f['T2']
-        xlat_ds = f['XLAT']
-        xlong_ds = f['XLONG']
-
-        # HGT is typically time-invariant in WRF, but may have time dimension
-        hgt_ds = f['HGT']
-        if hgt_ds.ndim == 3:
-            hgt = hgt_ds[0, :, :]
-        else:
-            hgt = hgt_ds[:, :]
-
-        # Q2 is optional - improves virtual temperature calculation
-        has_q2 = 'Q2' in f
-        q2_ds = f['Q2'] if has_q2 else None
-
-        n_times = psfc_ds.shape[0]
-
-        # Get lat/lon grids (use first timestep, typically constant)
-        xlat = xlat_ds[0, :, :]
-        xlong = xlong_ds[0, :, :]
-
-        # Get time strings if available
-        time_strings = None
-        if 'Times' in f:
-            times_data = f['Times'][:]
-            time_strings = []
-            for t_row in times_data:
-                if isinstance(t_row, (bytes, str)):
-                    t_str = t_row.decode('utf-8') if isinstance(t_row, bytes) else t_row
-                else:
-                    t_str = b"".join(t_row).decode('utf-8')
-                time_strings.append(t_str)
+        xlat = wrf.xlat
+        xlong = wrf.xlong
+        hgt = wrf.hgt
+        time_strings = wrf.times
+        n_times = wrf.n_times
 
         # Initialize search position
         current_lat = start_lat
         current_lon = start_lon
 
         for t in range(n_times):
-            # Read surface variables for this timestep
-            psfc = psfc_ds[t, :, :]
-            t2 = t2_ds[t, :, :]
-            q2 = q2_ds[t, :, :] if has_q2 else None
-
-            # Compute sea level pressure
-            slp = _compute_sea_level_pressure(psfc, hgt, t2, q2)
-
-            # Apply Gaussian smoothing if requested
-            if smoothing_sigma is not None:
-                slp = gaussian_filter(slp, sigma=smoothing_sigma)
+            # Compute sea level pressure using WRFFile method
+            slp = wrf.get_slp(t, smoothing_sigma=smoothing_sigma)
 
             # Find pressure minimum
             if t == 0 and current_lat is None:
@@ -634,28 +582,22 @@ def plot_cyclone_timestep(
     title : str, optional
         Custom title. If None, auto-generated from position data.
     """
-    wrfout_path = pathlib.Path(wrfout_path)
     output_path = pathlib.Path(output_path)
 
     if slp_levels is None:
         slp_levels = list(range(960, 1044, 4))
 
-    with h5py.File(wrfout_path, 'r') as f:
+    with WRFFile(wrfout_path) as wrf:
         # Read data for this timestep
         t = position.time_index
-        psfc = f['PSFC'][t, :, :]
-        t2 = f['T2'][t, :, :]
-        hgt = f['HGT'][0, :, :] if f['HGT'].ndim == 3 else f['HGT'][:, :]
-        xlat = f['XLAT'][0, :, :]
-        xlong = f['XLONG'][0, :, :]
+        xlat = wrf.xlat
+        xlong = wrf.xlong
 
         # Wrap longitudes to -180 to 180 range
         xlong = np.where(xlong < 0, xlong + 360, xlong)
 
-        q2 = f['Q2'][t, :, :] if 'Q2' in f else None
-
-        # Compute SLP
-        slp = _compute_sea_level_pressure(psfc, hgt, t2, q2)
+        # Compute SLP using WRFFile method
+        slp = wrf.get_slp(t)
         slp_hpa = slp / 100.0  # Convert to hPa
 
     # Create figure with cartopy projection if available
@@ -918,8 +860,8 @@ def plot_cyclone_track_multi_file(
 
     for path in wrfout_paths:
         path = pathlib.Path(path)
-        with h5py.File(path, 'r') as f:
-            n_times = f['PSFC'].shape[0]
+        with WRFFile(path) as wrf:
+            n_times = wrf.n_times
         file_time_ranges.append((time_offset, time_offset + n_times, path))
         time_offset += n_times
 

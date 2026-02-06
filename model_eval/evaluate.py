@@ -17,6 +17,7 @@ from model_eval.cyclone import (
     _grid_distances_km,
     _haversine_distance,
 )
+from model_eval.io import NetCDF4Writer, WRFFile
 
 ###################################################
 ### Parameters
@@ -826,53 +827,42 @@ def evaluate_models_cell(
     else:
         y_values = None
 
-    with h5py.File(output_path, 'w') as h5out:
-        # Set NetCDF4 conventions
-        h5out.attrs['Conventions'] = np.bytes_('CF-1.8')
-        h5out.attrs['history'] = np.bytes_(f'Created {datetime.now().isoformat()} by model_eval')
-        h5out.attrs['source_folder'] = np.bytes_(str(source_folder))
-        h5out.attrs['test_folder'] = np.bytes_(str(test_folder))
-        h5out.attrs['domain'] = domain
+    with NetCDF4Writer(output_path) as nc:
+        # Set global attributes
+        nc.set_global_attrs(
+            source_folder=str(source_folder),
+            test_folder=str(test_folder),
+            domain=domain,
+        )
         if proj4:
-            h5out.attrs['proj4'] = np.bytes_(proj4)
+            nc.h5.attrs['proj4'] = np.bytes_(proj4)
 
-        # Create dimensions as NetCDF4 dimension scales
-        time_ds = _make_netcdf4_dimension(h5out, 'time', n_times, data=time_values)
-        time_ds.attrs['units'] = np.bytes_('hours since 1970-01-01')
-        time_ds.attrs['calendar'] = np.bytes_('proleptic_gregorian')
-        time_ds.attrs['standard_name'] = np.bytes_('time')
-
-        y_ds = _make_netcdf4_dimension(h5out, 'y', n_y, data=y_values)
-        y_ds.attrs['standard_name'] = np.bytes_('projection_y_coordinate')
-        y_ds.attrs['units'] = np.bytes_('m')
-
-        x_ds = _make_netcdf4_dimension(h5out, 'x', n_x, data=x_values)
-        x_ds.attrs['standard_name'] = np.bytes_('projection_x_coordinate')
-        x_ds.attrs['units'] = np.bytes_('m')
-
+        # Create dimensions
+        time_ds = nc.create_time_dimension(n_times, data=time_values)
+        y_ds, x_ds = nc.create_spatial_dimensions(n_y, n_x, y_data=y_values, x_data=x_values)
         dim_scales = [time_ds, y_ds, x_ds]
 
         # Store region information in output file attributes
         if region is not None:
             if isinstance(region, (list, tuple)) and len(region) == 4:
-                h5out.attrs['region_type'] = np.bytes_('latlon_bounds')
-                h5out.attrs['region_min_lat'] = region[0]
-                h5out.attrs['region_max_lat'] = region[1]
-                h5out.attrs['region_min_lon'] = region[2]
-                h5out.attrs['region_max_lon'] = region[3]
+                nc.h5.attrs['region_type'] = np.bytes_('latlon_bounds')
+                nc.h5.attrs['region_min_lat'] = region[0]
+                nc.h5.attrs['region_max_lat'] = region[1]
+                nc.h5.attrs['region_min_lon'] = region[2]
+                nc.h5.attrs['region_max_lon'] = region[3]
             elif use_mask:
-                h5out.attrs['region_type'] = np.bytes_('spatial_mask')
+                nc.h5.attrs['region_type'] = np.bytes_('spatial_mask')
                 # Store the mask in the output file
-                mask_ds = h5out.create_dataset(
+                mask_ds = nc.create_variable(
                     'spatial_mask',
+                    shape=(n_y, n_x),
                     data=spatial_mask.astype(np.int8),
-                    compression='gzip',
-                    compression_opts=4,
+                    dtype='i1',
+                    long_name='Spatial mask (1=included, 0=excluded)',
+                    flag_values=np.array([0, 1], dtype=np.int8),
+                    flag_meanings='excluded included',
                 )
-                mask_ds.attrs['long_name'] = np.bytes_('Spatial mask (1=included, 0=excluded)')
-                mask_ds.attrs['flag_values'] = np.array([0, 1], dtype=np.int8)
-                mask_ds.attrs['flag_meanings'] = np.bytes_('excluded included')
-                _attach_dimension_scales(mask_ds, [y_ds, x_ds])
+                nc.attach_scales(mask_ds, [y_ds, x_ds])
 
         # Create output datasets for each variable and metric combination
         out_datasets = {}
@@ -882,39 +872,24 @@ def evaluate_models_cell(
                 ds_name = f'{var}_{metric}'
 
                 # Determine fill value for masked data
+                fill_value = None
                 if use_mask:
                     if metric_info['dtype'] == np.float32:
                         fill_value = np.float32(np.nan)
                     else:
                         fill_value = np.iinfo(metric_info['dtype']).min
-                    out_ds = h5out.create_dataset(
-                        ds_name,
-                        shape=(n_times, n_y, n_x),
-                        dtype=metric_info['dtype'],
-                        chunks=(1, n_y, n_x),
-                        compression='gzip',
-                        compression_opts=4,
-                        fillvalue=fill_value,
-                    )
-                else:
-                    out_ds = h5out.create_dataset(
-                        ds_name,
-                        shape=(n_times, n_y, n_x),
-                        dtype=metric_info['dtype'],
-                        chunks=(1, n_y, n_x),
-                        compression='gzip',
-                        compression_opts=4,
-                    )
 
-                out_ds.attrs['units'] = np.bytes_(metric_info['units'])
-                out_ds.attrs['long_name'] = np.bytes_(f"{metric_info['long_name']} for {var}")
-                out_ds.attrs['standard_name'] = np.bytes_(metric_info['standard_name'])
-                if use_mask:
-                    out_ds.attrs['_FillValue'] = fill_value
-
-                # Attach dimension scales
-                _attach_dimension_scales(out_ds, dim_scales)
-
+                out_ds = nc.create_variable(
+                    ds_name,
+                    shape=(n_times, n_y, n_x),
+                    dtype=metric_info['dtype'],
+                    units=metric_info['units'],
+                    long_name=f"{metric_info['long_name']} for {var}",
+                    standard_name=metric_info['standard_name'],
+                    fill_value=fill_value,
+                    chunks=(1, n_y, n_x),
+                )
+                nc.attach_scales(out_ds, dim_scales)
                 out_datasets[(var, metric)] = out_ds
 
         # Process each variable
@@ -1219,67 +1194,46 @@ def evaluate_models_domain(
 
     time_values = np.array(all_times, dtype='f8') if all_times else None
 
-    with h5py.File(output_path, 'w') as h5out:
-        # Set NetCDF4 conventions
-        h5out.attrs['Conventions'] = np.bytes_('CF-1.8')
-        h5out.attrs['history'] = np.bytes_(f'Created {datetime.now().isoformat()} by model_eval')
-        h5out.attrs['source_folder'] = np.bytes_(str(source_folder))
-        h5out.attrs['test_folder'] = np.bytes_(str(test_folder))
-        h5out.attrs['domain'] = domain
-        h5out.attrs['aggregation_type'] = np.bytes_('domain')
+    with NetCDF4Writer(output_path) as nc:
+        # Set global attributes
+        nc.set_global_attrs(
+            source_folder=str(source_folder),
+            test_folder=str(test_folder),
+            domain=domain,
+            aggregation_type='domain',
+        )
         if proj4:
-            h5out.attrs['proj4'] = np.bytes_(proj4)
+            nc.h5.attrs['proj4'] = np.bytes_(proj4)
 
         # Store region information
         if region is not None:
             if isinstance(region, (list, tuple)) and len(region) == 4:
-                h5out.attrs['region_type'] = np.bytes_('latlon_bounds')
-                h5out.attrs['region_min_lat'] = region[0]
-                h5out.attrs['region_max_lat'] = region[1]
-                h5out.attrs['region_min_lon'] = region[2]
-                h5out.attrs['region_max_lon'] = region[3]
+                nc.h5.attrs['region_type'] = np.bytes_('latlon_bounds')
+                nc.h5.attrs['region_min_lat'] = region[0]
+                nc.h5.attrs['region_max_lat'] = region[1]
+                nc.h5.attrs['region_min_lon'] = region[2]
+                nc.h5.attrs['region_max_lon'] = region[3]
             elif spatial_mask is not None:
-                h5out.attrs['region_type'] = np.bytes_('spatial_mask')
+                nc.h5.attrs['region_type'] = np.bytes_('spatial_mask')
 
-        # Create time dimension
-        time_ds = _make_netcdf4_dimension(h5out, 'time', n_times, data=time_values)
-        time_ds.attrs['units'] = np.bytes_('hours since 1970-01-01')
-        time_ds.attrs['calendar'] = np.bytes_('proleptic_gregorian')
-        time_ds.attrs['standard_name'] = np.bytes_('time')
-
-        # Create metric dimension with integer index
-        n_metrics = len(metrics)
-        metric_ds = h5out.create_dataset('metric', data=np.arange(n_metrics, dtype=np.int32))
-        metric_ds.attrs[CLASS] = np.bytes_('DIMENSION_SCALE')
-        metric_ds.attrs[NAME] = np.bytes_('metric')
-        metric_ds.attrs['long_name'] = np.bytes_('Evaluation metric index')
-        # Store metric names as space-separated attribute (CF-compliant)
-        metric_ds.attrs['metric_names'] = np.bytes_(' '.join(metrics))
-        # Also store as flag_meanings style for easier parsing
-        metric_ds.attrs['flag_values'] = np.arange(n_metrics, dtype=np.int32)
-        metric_ds.attrs['flag_meanings'] = np.bytes_(' '.join(metrics))
+        # Create dimensions
+        time_ds = nc.create_time_dimension(n_times, data=time_values)
+        metric_ds = nc.create_metric_dimension(metrics)
 
         # Build metric index lookup
+        n_metrics = len(metrics)
         metric_indices = {m: i for i, m in enumerate(metrics)}
 
         # Create output datasets for each variable with shape (time, metric)
         out_datasets = {}
         for var in variables:
-            out_ds = h5out.create_dataset(
+            out_ds = nc.create_variable(
                 var,
                 shape=(n_times, n_metrics),
-                dtype=np.float32,
-                compression='gzip',
-                compression_opts=4,
+                dtype='f4',
+                long_name=f"Domain-aggregated evaluation metrics for {var}",
             )
-            out_ds.attrs['long_name'] = np.bytes_(f"Domain-aggregated evaluation metrics for {var}")
-
-            # Attach dimension scales
-            time_ds.make_scale('time')
-            metric_ds.make_scale('metric')
-            out_ds.dims[0].attach_scale(time_ds)
-            out_ds.dims[1].attach_scale(metric_ds)
-
+            nc.attach_scales(out_ds, [time_ds, metric_ds])
             out_datasets[var] = out_ds
 
         # Process each variable
@@ -1444,11 +1398,6 @@ def evaluate_cyclones(
     test_path = pathlib.Path(test_path)
     output_path = pathlib.Path(output_path)
 
-    if not source_path.exists():
-        raise FileNotFoundError(f"Source file not found: {source_path}")
-    if not test_path.exists():
-        raise FileNotFoundError(f"Test file not found: {test_path}")
-
     # Normalize metrics to a list
     if isinstance(metrics, str):
         metrics = [metrics]
@@ -1458,64 +1407,33 @@ def evaluate_cyclones(
         if m not in AVAILABLE_DOMAIN_METRICS:
             raise ValueError(f"Unknown metric '{m}'. Available: {AVAILABLE_DOMAIN_METRICS}")
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Import gaussian_filter only if smoothing is requested
-    if smoothing_sigma is not None:
-        from scipy.ndimage import gaussian_filter
-
-    with h5py.File(source_path, 'r') as h5s, h5py.File(test_path, 'r') as h5t:
+    with WRFFile(source_path) as wrf_s, WRFFile(test_path) as wrf_t:
         # Validate required variables for SLP calculation
         required_vars = ['PSFC', 'HGT', 'T2', 'XLAT', 'XLONG']
         for var in required_vars:
-            if var not in h5s:
+            if not wrf_s.has_variable(var):
                 raise ValueError(f"Required variable '{var}' not found in {source_path}")
-            if var not in h5t:
+            if not wrf_t.has_variable(var):
                 raise ValueError(f"Required variable '{var}' not found in {test_path}")
 
         # Validate evaluation variables
         for var in variables:
-            if var not in h5s:
+            if not wrf_s.has_variable(var):
                 raise ValueError(f"Variable '{var}' not found in {source_path}")
-            if var not in h5t:
+            if not wrf_t.has_variable(var):
                 raise ValueError(f"Variable '{var}' not found in {test_path}")
 
         # Get dimensions
-        n_times_source = h5s['PSFC'].shape[0]
-        n_times_test = h5t['PSFC'].shape[0]
-        n_times = min(n_times_source, n_times_test)
+        n_times = min(wrf_s.n_times, wrf_t.n_times)
 
-        # Get grids (use first timestep, typically constant)
-        xlat_s = h5s['XLAT'][0, :, :]
-        xlong_s = h5s['XLONG'][0, :, :]
-        xlat_t = h5t['XLAT'][0, :, :]
-        xlong_t = h5t['XLONG'][0, :, :]
+        # Get grids
+        xlat_s = wrf_s.xlat
+        xlong_s = wrf_s.xlong
+        xlat_t = wrf_t.xlat
+        xlong_t = wrf_t.xlong
 
-        # Get terrain height (time-invariant)
-        hgt_s = h5s['HGT'][0, :, :] if h5s['HGT'].ndim == 3 else h5s['HGT'][:, :]
-        hgt_t = h5t['HGT'][0, :, :] if h5t['HGT'].ndim == 3 else h5t['HGT'][:, :]
-
-        has_q2_s = 'Q2' in h5s
-        has_q2_t = 'Q2' in h5t
-
-        # Get time strings if available
-        time_values = []
-        if 'Times' in h5s:
-            times_data = h5s['Times'][:n_times]
-            for t_row in times_data:
-                if isinstance(t_row, (bytes, str)):
-                    t_str = t_row.decode('utf-8') if isinstance(t_row, bytes) else t_row
-                else:
-                    t_str = b"".join(t_row).decode('utf-8')
-                t_str = t_str.replace('_', 'T')
-                try:
-                    dt = np.datetime64(t_str)
-                    hours = (dt - np.datetime64('1970-01-01')) / np.timedelta64(1, 'h')
-                    time_values.append(hours)
-                except ValueError:
-                    time_values.append(np.nan)
-
-        time_values = np.array(time_values, dtype='f8') if time_values else None
+        # Get time values
+        time_values = wrf_s.time_values[:n_times] if wrf_s.time_values is not None else None
 
         # Track cyclones and compute metrics
         source_positions = []
@@ -1531,13 +1449,7 @@ def evaluate_cyclones(
 
         for t in range(n_times):
             # --- Track source cyclone ---
-            psfc_s = h5s['PSFC'][t, :, :]
-            t2_s = h5s['T2'][t, :, :]
-            q2_s = h5s['Q2'][t, :, :] if has_q2_s else None
-
-            slp_s = _compute_sea_level_pressure(psfc_s, hgt_s, t2_s, q2_s)
-            if smoothing_sigma is not None:
-                slp_s = gaussian_filter(slp_s, sigma=smoothing_sigma)
+            slp_s = wrf_s.get_slp(t, smoothing_sigma=smoothing_sigma)
 
             if t == 0 and current_lat_s is None:
                 y_idx_s, x_idx_s, min_p_s = _find_pressure_minimum(slp_s, xlat_s, xlong_s)
@@ -1572,13 +1484,7 @@ def evaluate_cyclones(
             current_lon_s = center_lon_s
 
             # --- Track test cyclone ---
-            psfc_t = h5t['PSFC'][t, :, :]
-            t2_t = h5t['T2'][t, :, :]
-            q2_t = h5t['Q2'][t, :, :] if has_q2_t else None
-
-            slp_t = _compute_sea_level_pressure(psfc_t, hgt_t, t2_t, q2_t)
-            if smoothing_sigma is not None:
-                slp_t = gaussian_filter(slp_t, sigma=smoothing_sigma)
+            slp_t = wrf_t.get_slp(t, smoothing_sigma=smoothing_sigma)
 
             if t == 0 and current_lat_t is None:
                 y_idx_t, x_idx_t, min_p_t = _find_pressure_minimum(slp_t, xlat_t, xlong_t)
@@ -1621,21 +1527,21 @@ def evaluate_cyclones(
 
             # --- Compute metrics for each variable ---
             for var in variables:
-                source_data = h5s[var][t:t+1, :, :]  # Shape (1, y, x)
-                test_data = h5t[var][t:t+1, :, :]
+                source_data = wrf_s.get_variable(var, t)
+                test_data = wrf_t.get_variable(var, t)
 
                 for m_idx, metric in enumerate(metrics):
                     if metric == 'ne':
                         # Aggregate each over its own mask, then compute NE
-                        source_sum = np.sum(np.where(mask_s, source_data[0], 0.0))
-                        test_sum = np.sum(np.where(mask_t, test_data[0], 0.0))
+                        source_sum = np.sum(np.where(mask_s, source_data, 0.0))
+                        test_sum = np.sum(np.where(mask_t, test_data, 0.0))
                         if np.abs(source_sum) < epsilon:
                             result = 0.0
                         else:
                             result = ((test_sum - source_sum) / source_sum) * 100
                     elif metric == 'ane':
-                        source_sum = np.sum(np.where(mask_s, source_data[0], 0.0))
-                        test_sum = np.sum(np.where(mask_t, test_data[0], 0.0))
+                        source_sum = np.sum(np.where(mask_s, source_data, 0.0))
+                        test_sum = np.sum(np.where(mask_t, test_data, 0.0))
                         if np.abs(source_sum) < epsilon:
                             result = 0.0
                         else:
@@ -1644,102 +1550,105 @@ def evaluate_cyclones(
                         # For RMSE, compute mean over each region then difference
                         n_cells_s = np.sum(mask_s)
                         n_cells_t = np.sum(mask_t)
-                        source_mean = np.sum(np.where(mask_s, source_data[0], 0.0)) / max(n_cells_s, 1)
-                        test_mean = np.sum(np.where(mask_t, test_data[0], 0.0)) / max(n_cells_t, 1)
+                        source_mean = np.sum(np.where(mask_s, source_data, 0.0)) / max(n_cells_s, 1)
+                        test_mean = np.sum(np.where(mask_t, test_data, 0.0)) / max(n_cells_t, 1)
                         result = np.abs(test_mean - source_mean)
 
                     var_results[var][t, m_idx] = result
 
-    # --- Write output file ---
-    with h5py.File(output_path, 'w') as h5out:
-        # Global attributes
-        h5out.attrs['Conventions'] = np.bytes_('CF-1.8')
-        h5out.attrs['history'] = np.bytes_(f'Created {datetime.now().isoformat()} by model_eval')
-        h5out.attrs['source_file'] = np.bytes_(str(source_path))
-        h5out.attrs['test_file'] = np.bytes_(str(test_path))
-        h5out.attrs['evaluation_type'] = np.bytes_('cyclone')
+    # --- Write output file using NetCDF4Writer ---
+    with NetCDF4Writer(output_path) as nc:
+        nc.set_global_attrs(
+            source_file=str(source_path),
+            test_file=str(test_path),
+            evaluation_type='cyclone',
+        )
 
-        # Create time dimension
-        time_ds = _make_netcdf4_dimension(h5out, 'time', n_times, data=time_values)
-        time_ds.attrs['units'] = np.bytes_('hours since 1970-01-01')
-        time_ds.attrs['calendar'] = np.bytes_('proleptic_gregorian')
-        time_ds.attrs['standard_name'] = np.bytes_('time')
-
-        # Create metric dimension
-        n_metrics = len(metrics)
-        metric_ds = h5out.create_dataset('metric', data=np.arange(n_metrics, dtype=np.int32))
-        metric_ds.attrs[CLASS] = np.bytes_('DIMENSION_SCALE')
-        metric_ds.attrs[NAME] = np.bytes_('metric')
-        metric_ds.attrs['long_name'] = np.bytes_('Evaluation metric index')
-        metric_ds.attrs['flag_values'] = np.arange(n_metrics, dtype=np.int32)
-        metric_ds.attrs['flag_meanings'] = np.bytes_(' '.join(metrics))
+        # Create dimensions
+        time_ds = nc.create_time_dimension(n_times, data=time_values)
+        metric_ds = nc.create_metric_dimension(metrics)
 
         # --- Source track variables ---
-        source_lat_ds = h5out.create_dataset(
+        source_lat_ds = nc.create_variable(
             'source_latitude',
+            shape=(n_times,),
             data=np.array([p.latitude for p in source_positions], dtype=np.float32),
+            units='degrees_north',
+            long_name='Source cyclone center latitude',
+            compress=False,
         )
-        source_lat_ds.attrs['units'] = np.bytes_('degrees_north')
-        source_lat_ds.attrs['long_name'] = np.bytes_('Source cyclone center latitude')
-        time_ds.make_scale('time')
-        source_lat_ds.dims[0].attach_scale(time_ds)
+        nc.attach_scales(source_lat_ds, [time_ds])
 
-        source_lon_ds = h5out.create_dataset(
+        source_lon_ds = nc.create_variable(
             'source_longitude',
+            shape=(n_times,),
             data=np.array([p.longitude for p in source_positions], dtype=np.float32),
+            units='degrees_east',
+            long_name='Source cyclone center longitude',
+            compress=False,
         )
-        source_lon_ds.attrs['units'] = np.bytes_('degrees_east')
-        source_lon_ds.attrs['long_name'] = np.bytes_('Source cyclone center longitude')
-        source_lon_ds.dims[0].attach_scale(time_ds)
+        nc.attach_scales(source_lon_ds, [time_ds])
 
-        source_pressure_ds = h5out.create_dataset(
+        source_pressure_ds = nc.create_variable(
             'source_pressure',
+            shape=(n_times,),
             data=np.array([p.central_pressure for p in source_positions], dtype=np.float32),
+            units='Pa',
+            long_name='Source cyclone central sea level pressure',
+            compress=False,
         )
-        source_pressure_ds.attrs['units'] = np.bytes_('Pa')
-        source_pressure_ds.attrs['long_name'] = np.bytes_('Source cyclone central sea level pressure')
-        source_pressure_ds.dims[0].attach_scale(time_ds)
+        nc.attach_scales(source_pressure_ds, [time_ds])
 
-        source_radius_ds = h5out.create_dataset(
+        source_radius_ds = nc.create_variable(
             'source_radius',
+            shape=(n_times,),
             data=np.array([p.radius_km for p in source_positions], dtype=np.float32),
+            units='km',
+            long_name='Source cyclone radius',
+            compress=False,
         )
-        source_radius_ds.attrs['units'] = np.bytes_('km')
-        source_radius_ds.attrs['long_name'] = np.bytes_('Source cyclone radius')
-        source_radius_ds.dims[0].attach_scale(time_ds)
+        nc.attach_scales(source_radius_ds, [time_ds])
 
         # --- Test track variables ---
-        test_lat_ds = h5out.create_dataset(
+        test_lat_ds = nc.create_variable(
             'test_latitude',
+            shape=(n_times,),
             data=np.array([p.latitude for p in test_positions], dtype=np.float32),
+            units='degrees_north',
+            long_name='Test cyclone center latitude',
+            compress=False,
         )
-        test_lat_ds.attrs['units'] = np.bytes_('degrees_north')
-        test_lat_ds.attrs['long_name'] = np.bytes_('Test cyclone center latitude')
-        test_lat_ds.dims[0].attach_scale(time_ds)
+        nc.attach_scales(test_lat_ds, [time_ds])
 
-        test_lon_ds = h5out.create_dataset(
+        test_lon_ds = nc.create_variable(
             'test_longitude',
+            shape=(n_times,),
             data=np.array([p.longitude for p in test_positions], dtype=np.float32),
+            units='degrees_east',
+            long_name='Test cyclone center longitude',
+            compress=False,
         )
-        test_lon_ds.attrs['units'] = np.bytes_('degrees_east')
-        test_lon_ds.attrs['long_name'] = np.bytes_('Test cyclone center longitude')
-        test_lon_ds.dims[0].attach_scale(time_ds)
+        nc.attach_scales(test_lon_ds, [time_ds])
 
-        test_pressure_ds = h5out.create_dataset(
+        test_pressure_ds = nc.create_variable(
             'test_pressure',
+            shape=(n_times,),
             data=np.array([p.central_pressure for p in test_positions], dtype=np.float32),
+            units='Pa',
+            long_name='Test cyclone central sea level pressure',
+            compress=False,
         )
-        test_pressure_ds.attrs['units'] = np.bytes_('Pa')
-        test_pressure_ds.attrs['long_name'] = np.bytes_('Test cyclone central sea level pressure')
-        test_pressure_ds.dims[0].attach_scale(time_ds)
+        nc.attach_scales(test_pressure_ds, [time_ds])
 
-        test_radius_ds = h5out.create_dataset(
+        test_radius_ds = nc.create_variable(
             'test_radius',
+            shape=(n_times,),
             data=np.array([p.radius_km for p in test_positions], dtype=np.float32),
+            units='km',
+            long_name='Test cyclone radius',
+            compress=False,
         )
-        test_radius_ds.attrs['units'] = np.bytes_('km')
-        test_radius_ds.attrs['long_name'] = np.bytes_('Test cyclone radius')
-        test_radius_ds.dims[0].attach_scale(time_ds)
+        nc.attach_scales(test_radius_ds, [time_ds])
 
         # --- Track comparison variables ---
         position_diff = np.array([
@@ -1750,44 +1659,54 @@ def evaluate_cyclones(
             for t in range(n_times)
         ], dtype=np.float32)
 
-        pos_diff_ds = h5out.create_dataset('position_difference_km', data=position_diff)
-        pos_diff_ds.attrs['units'] = np.bytes_('km')
-        pos_diff_ds.attrs['long_name'] = np.bytes_('Distance between cyclone centers')
-        pos_diff_ds.dims[0].attach_scale(time_ds)
+        pos_diff_ds = nc.create_variable(
+            'position_difference_km',
+            shape=(n_times,),
+            data=position_diff,
+            units='km',
+            long_name='Distance between cyclone centers',
+            compress=False,
+        )
+        nc.attach_scales(pos_diff_ds, [time_ds])
 
         pressure_diff = np.array([
             test_positions[t].central_pressure - source_positions[t].central_pressure
             for t in range(n_times)
         ], dtype=np.float32)
 
-        pressure_diff_ds = h5out.create_dataset('pressure_difference', data=pressure_diff)
-        pressure_diff_ds.attrs['units'] = np.bytes_('Pa')
-        pressure_diff_ds.attrs['long_name'] = np.bytes_('Test minus source central pressure')
-        pressure_diff_ds.dims[0].attach_scale(time_ds)
+        pressure_diff_ds = nc.create_variable(
+            'pressure_difference',
+            shape=(n_times,),
+            data=pressure_diff,
+            units='Pa',
+            long_name='Test minus source central pressure',
+            compress=False,
+        )
+        nc.attach_scales(pressure_diff_ds, [time_ds])
 
         radius_diff = np.array([
             test_positions[t].radius_km - source_positions[t].radius_km
             for t in range(n_times)
         ], dtype=np.float32)
 
-        radius_diff_ds = h5out.create_dataset('radius_difference', data=radius_diff)
-        radius_diff_ds.attrs['units'] = np.bytes_('km')
-        radius_diff_ds.attrs['long_name'] = np.bytes_('Test minus source cyclone radius')
-        radius_diff_ds.dims[0].attach_scale(time_ds)
+        radius_diff_ds = nc.create_variable(
+            'radius_difference',
+            shape=(n_times,),
+            data=radius_diff,
+            units='km',
+            long_name='Test minus source cyclone radius',
+            compress=False,
+        )
+        nc.attach_scales(radius_diff_ds, [time_ds])
 
         # --- Evaluation metric variables ---
         for var in variables:
-            out_ds = h5out.create_dataset(
+            out_ds = nc.create_variable(
                 var,
+                shape=(n_times, n_metrics),
                 data=var_results[var],
-                dtype=np.float32,
-                compression='gzip',
-                compression_opts=4,
+                long_name=f'Cyclone-region aggregated metrics for {var}',
             )
-            out_ds.attrs['long_name'] = np.bytes_(f'Cyclone-region aggregated metrics for {var}')
-            time_ds.make_scale('time')
-            metric_ds.make_scale('metric')
-            out_ds.dims[0].attach_scale(time_ds)
-            out_ds.dims[1].attach_scale(metric_ds)
+            nc.attach_scales(out_ds, [time_ds, metric_ds])
 
     return output_path
