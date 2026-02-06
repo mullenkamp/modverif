@@ -22,6 +22,15 @@ def create_mock_wrfout_with_coords(path, variables, shape, dx=1000.0, dy=1000.0,
         f.attrs['STAND_LON'] = -100.0
         f.attrs['MOAD_CEN_LAT'] = 45.0
 
+        # Times variable - WRF stores as 2D char array (n_times, str_len)
+        n_times = shape[0]
+        times = [f'2020-09-30_{t:02d}:00:00' for t in range(n_times)]
+        max_len = max(len(t) for t in times)
+        times_data = np.array(
+            [[c.encode() for c in t.ljust(max_len)] for t in times], dtype='S1'
+        )
+        f.create_dataset('Times', data=times_data)
+
         for var in variables:
             data = np.ones(shape, dtype=np.float32) * 100
             f.create_dataset(var, data=data)
