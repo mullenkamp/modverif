@@ -1767,14 +1767,6 @@ class TestEvaluateCyclones:
                 rainnc = np.random.uniform(0, 10, (n_times, n_y, n_x)).astype(np.float32)
                 f.create_dataset('RAINNC', data=rainnc)
 
-                # Times variable
-                times = [f'2020-01-01_{t:02d}:00:00' for t in range(n_times)]
-                max_len = max(len(t) for t in times)
-                times_data = np.array(
-                    [[c.encode() for c in t.ljust(max_len)] for t in times], dtype='S1'
-                )
-                f.create_dataset('Times', data=times_data)
-
         return tmp_path / "wrfout_source.nc", tmp_path / "wrfout_test.nc"
 
     def test_evaluate_cyclones_basic(self, mock_cyclone_files, tmp_path):
