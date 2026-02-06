@@ -8,7 +8,7 @@ import h5py
 import numpy as np
 import pytest
 
-from model_eval.evaluate import evaluate_models
+from model_eval.evaluate import evaluate_models_cell
 
 
 def create_mock_wrfout_with_coords(path, variables, shape, dx=1000.0, dy=1000.0, map_proj=1):
@@ -58,7 +58,7 @@ class TestCoordinates:
         create_mock_wrfout_with_coords(test_file, variables, shape, dx=dx, dy=dy)
 
         output_path = tmp_path / 'output.nc'
-        evaluate_models(source_dir, test_dir, output_path, domain=4, variables=variables)
+        evaluate_models_cell(source_dir, test_dir, output_path, domain=4, variables=variables)
 
         with h5py.File(output_path, 'r') as f:
             # Check proj4 attribute
