@@ -11,8 +11,8 @@ import numpy as np
 from matplotlib.patches import Circle
 from scipy.ndimage import gaussian_filter
 
-# from model_eval.wrfio import WRFFile
-from wrfio import WRFFile
+from model_eval.wrfio import WRFFile
+# from wrfio import WRFFile
 
 try:
     import cartopy.crs as ccrs
