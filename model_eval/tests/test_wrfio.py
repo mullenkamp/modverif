@@ -57,6 +57,12 @@ class TestWRFFile:
             q2_data = np.random.uniform(0.005, 0.015, (n_times, n_y, n_x)).astype(np.float32)
             f.create_dataset('Q2', data=q2_data)
 
+            # 10-meter wind components
+            u10_data = np.random.uniform(-10, 10, (n_times, n_y, n_x)).astype(np.float32)
+            v10_data = np.random.uniform(-10, 10, (n_times, n_y, n_x)).astype(np.float32)
+            f.create_dataset('U10', data=u10_data)
+            f.create_dataset('V10', data=v10_data)
+
             # Times variable - WRF stores as 2D char array (n_times, str_len)
             times = ['2020-01-01_00:00:00', '2020-01-01_01:00:00', '2020-01-01_02:00:00']
             max_len = max(len(t) for t in times)
@@ -187,6 +193,219 @@ class TestWRFFile:
             xlat2 = wrf.xlat
             # Should be the same object (cached)
             assert xlat1 is xlat2
+
+    # --- Diagnostic variable tests ---
+
+    def test_get_wind_speed_single_time(self, sample_wrf_file):
+        """Test get_wind_speed for a single timestep."""
+        with WRFFile(sample_wrf_file) as wrf:
+            ws = wrf.get_wind_speed(0)
+            assert ws.shape == (10, 15)
+            # Wind speed should be non-negative
+            assert np.all(ws >= 0)
+
+    def test_get_wind_speed_all_times(self, sample_wrf_file):
+        """Test get_wind_speed for all timesteps."""
+        with WRFFile(sample_wrf_file) as wrf:
+            ws = wrf.get_wind_speed()
+            assert ws.shape == (3, 10, 15)
+            assert np.all(ws >= 0)
+
+    def test_get_wind_speed_calculation(self, tmp_path):
+        """Test wind speed calculation with known values."""
+        filepath = tmp_path / "wind_test.nc"
+        with h5py.File(filepath, 'w') as f:
+            # U=3, V=4 should give speed=5
+            f.create_dataset('U10', data=np.full((1, 2, 2), 3.0, dtype=np.float32))
+            f.create_dataset('V10', data=np.full((1, 2, 2), 4.0, dtype=np.float32))
+            f.create_dataset('PSFC', data=np.full((1, 2, 2), 101325.0, dtype=np.float32))
+
+        with WRFFile(filepath) as wrf:
+            ws = wrf.get_wind_speed(0)
+            np.testing.assert_array_almost_equal(ws, 5.0)
+
+    def test_get_wind_direction_single_time(self, sample_wrf_file):
+        """Test get_wind_direction for a single timestep."""
+        with WRFFile(sample_wrf_file) as wrf:
+            wd = wrf.get_wind_direction(0)
+            assert wd.shape == (10, 15)
+            # Wind direction should be in [0, 360)
+            assert np.all(wd >= 0)
+            assert np.all(wd < 360)
+
+    def test_get_wind_direction_all_times(self, sample_wrf_file):
+        """Test get_wind_direction for all timesteps."""
+        with WRFFile(sample_wrf_file) as wrf:
+            wd = wrf.get_wind_direction()
+            assert wd.shape == (3, 10, 15)
+            assert np.all(wd >= 0)
+            assert np.all(wd < 360)
+
+    def test_get_wind_direction_calculation(self, tmp_path):
+        """Test wind direction calculation with known values."""
+        filepath = tmp_path / "wind_dir_test.nc"
+        with h5py.File(filepath, 'w') as f:
+            # Wind FROM north (V negative = wind going south = from north)
+            f.create_dataset('U10', data=np.array([[[0.0]]], dtype=np.float32))
+            f.create_dataset('V10', data=np.array([[[-5.0]]], dtype=np.float32))
+            f.create_dataset('PSFC', data=np.full((1, 1, 1), 101325.0, dtype=np.float32))
+
+        with WRFFile(filepath) as wrf:
+            wd = wrf.get_wind_direction(0)
+            # Wind from north should be ~0 or 360 degrees
+            assert wd[0, 0] == pytest.approx(0.0, abs=1.0) or wd[0, 0] == pytest.approx(360.0, abs=1.0)
+
+    def test_get_wind_direction_from_east(self, tmp_path):
+        """Test wind direction for wind from east."""
+        filepath = tmp_path / "wind_dir_east.nc"
+        with h5py.File(filepath, 'w') as f:
+            # Wind FROM east (U negative = wind going west = from east)
+            f.create_dataset('U10', data=np.array([[[-5.0]]], dtype=np.float32))
+            f.create_dataset('V10', data=np.array([[[0.0]]], dtype=np.float32))
+            f.create_dataset('PSFC', data=np.full((1, 1, 1), 101325.0, dtype=np.float32))
+
+        with WRFFile(filepath) as wrf:
+            wd = wrf.get_wind_direction(0)
+            # Wind from east should be ~90 degrees
+            assert wd[0, 0] == pytest.approx(90.0, abs=1.0)
+
+    def test_get_rh_single_time(self, sample_wrf_file):
+        """Test get_rh for a single timestep."""
+        with WRFFile(sample_wrf_file) as wrf:
+            rh = wrf.get_rh(0)
+            assert rh.shape == (10, 15)
+            # RH should be clipped to [0, 100]
+            assert np.all(rh >= 0)
+            assert np.all(rh <= 100)
+
+    def test_get_rh_all_times(self, sample_wrf_file):
+        """Test get_rh for all timesteps."""
+        with WRFFile(sample_wrf_file) as wrf:
+            rh = wrf.get_rh()
+            assert rh.shape == (3, 10, 15)
+            assert np.all(rh >= 0)
+            assert np.all(rh <= 100)
+
+    def test_get_rh_calculation(self, tmp_path):
+        """Test RH calculation with known values."""
+        filepath = tmp_path / "rh_test.nc"
+        with h5py.File(filepath, 'w') as f:
+            # At 20C (293.15K), saturation vapor pressure is ~2339 Pa
+            # With mixing ratio giving vapor pressure ~1170 Pa, RH should be ~50%
+            t2 = np.array([[[293.15]]], dtype=np.float32)
+            psfc = np.array([[[101325.0]]], dtype=np.float32)
+            # q = 0.622 * e / (p - e), solving for q when e = 1170 Pa
+            # q = 0.622 * 1170 / (101325 - 1170) ≈ 0.00726
+            q2 = np.array([[[0.00726]]], dtype=np.float32)
+            f.create_dataset('T2', data=t2)
+            f.create_dataset('Q2', data=q2)
+            f.create_dataset('PSFC', data=psfc)
+
+        with WRFFile(filepath) as wrf:
+            rh = wrf.get_rh(0)
+            # Should be approximately 50%
+            assert rh[0, 0] == pytest.approx(50.0, rel=0.1)
+
+    def test_get_dewpoint_single_time(self, sample_wrf_file):
+        """Test get_dewpoint for a single timestep."""
+        with WRFFile(sample_wrf_file) as wrf:
+            td = wrf.get_dewpoint(0)
+            assert td.shape == (10, 15)
+            # Dewpoint should be in a reasonable range (200K to 320K)
+            assert np.all(td > 200)
+            assert np.all(td < 320)
+
+    def test_get_dewpoint_all_times(self, sample_wrf_file):
+        """Test get_dewpoint for all timesteps."""
+        with WRFFile(sample_wrf_file) as wrf:
+            td = wrf.get_dewpoint()
+            assert td.shape == (3, 10, 15)
+
+    def test_get_dewpoint_calculation(self, tmp_path):
+        """Test dewpoint calculation - at 100% RH, dewpoint equals temperature."""
+        filepath = tmp_path / "td_test.nc"
+        with h5py.File(filepath, 'w') as f:
+            t2 = np.array([[[293.15]]], dtype=np.float32)  # 20C
+            psfc = np.array([[[101325.0]]], dtype=np.float32)
+            # Saturation mixing ratio at 20C, ~0.0147 kg/kg
+            # At saturation, e_s ≈ 2339 Pa, q_s = 0.622 * 2339 / (101325 - 2339) ≈ 0.0147
+            q2 = np.array([[[0.0147]]], dtype=np.float32)
+            f.create_dataset('T2', data=t2)
+            f.create_dataset('Q2', data=q2)
+            f.create_dataset('PSFC', data=psfc)
+
+        with WRFFile(filepath) as wrf:
+            td = wrf.get_dewpoint(0)
+            # At saturation, dewpoint should equal temperature
+            assert td[0, 0] == pytest.approx(293.15, rel=0.02)
+
+    def test_get_theta_single_time(self, sample_wrf_file):
+        """Test get_theta for a single timestep."""
+        with WRFFile(sample_wrf_file) as wrf:
+            theta = wrf.get_theta(0)
+            assert theta.shape == (10, 15)
+            # Potential temperature should generally be >= actual temperature
+            # (for surface pressure <= 1000 hPa)
+            t2 = wrf.get_variable('T2', 0)
+            psfc = wrf.get_variable('PSFC', 0)
+            # Where psfc < P0 (100000 Pa), theta > T
+            mask = psfc < 100000.0
+            if np.any(mask):
+                assert np.all(theta[mask] >= t2[mask] - 0.1)
+
+    def test_get_theta_all_times(self, sample_wrf_file):
+        """Test get_theta for all timesteps."""
+        with WRFFile(sample_wrf_file) as wrf:
+            theta = wrf.get_theta()
+            assert theta.shape == (3, 10, 15)
+
+    def test_get_theta_calculation(self, tmp_path):
+        """Test potential temperature calculation with known values."""
+        filepath = tmp_path / "theta_test.nc"
+        with h5py.File(filepath, 'w') as f:
+            # At P0 (1000 hPa), theta = T
+            t2 = np.array([[[300.0]]], dtype=np.float32)
+            psfc = np.array([[[100000.0]]], dtype=np.float32)  # P0
+            f.create_dataset('T2', data=t2)
+            f.create_dataset('PSFC', data=psfc)
+
+        with WRFFile(filepath) as wrf:
+            theta = wrf.get_theta(0)
+            # At reference pressure, theta = T
+            assert theta[0, 0] == pytest.approx(300.0, rel=0.001)
+
+    def test_get_theta_e_single_time(self, sample_wrf_file):
+        """Test get_theta_e for a single timestep."""
+        with WRFFile(sample_wrf_file) as wrf:
+            theta_e = wrf.get_theta_e(0)
+            assert theta_e.shape == (10, 15)
+            # Equivalent potential temperature should be >= potential temperature
+            theta = wrf.get_theta(0)
+            assert np.all(theta_e >= theta - 1.0)  # Small tolerance
+
+    def test_get_theta_e_all_times(self, sample_wrf_file):
+        """Test get_theta_e for all timesteps."""
+        with WRFFile(sample_wrf_file) as wrf:
+            theta_e = wrf.get_theta_e()
+            assert theta_e.shape == (3, 10, 15)
+
+    def test_get_theta_e_dry_air(self, tmp_path):
+        """Test theta_e approaches theta for very dry air."""
+        filepath = tmp_path / "theta_e_dry.nc"
+        with h5py.File(filepath, 'w') as f:
+            t2 = np.array([[[300.0]]], dtype=np.float32)
+            psfc = np.array([[[100000.0]]], dtype=np.float32)
+            # Very small mixing ratio (nearly dry)
+            q2 = np.array([[[0.0001]]], dtype=np.float32)
+            f.create_dataset('T2', data=t2)
+            f.create_dataset('PSFC', data=psfc)
+            f.create_dataset('Q2', data=q2)
+
+        with WRFFile(filepath) as wrf:
+            theta = wrf.get_theta(0)
+            theta_e = wrf.get_theta_e(0)
+            # For very dry air, theta_e should be close to theta
+            assert theta_e[0, 0] == pytest.approx(theta[0, 0], rel=0.05)
 
 
 class TestNetCDF4Writer:

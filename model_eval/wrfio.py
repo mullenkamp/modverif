@@ -262,6 +262,238 @@ class WRFFile:
 
         return slp
 
+    def get_wind_speed(self, time_index: int = None) -> np.ndarray:
+        """
+        Compute 10-meter wind speed from U10 and V10 components.
+
+        Parameters
+        ----------
+        time_index : int, optional
+            Timestep index. If None, return all timesteps.
+
+        Returns
+        -------
+        np.ndarray
+            Wind speed in m/s.
+        """
+        u10 = self.get_variable('U10', time_index)
+        v10 = self.get_variable('V10', time_index)
+        return np.sqrt(u10**2 + v10**2)
+
+    def get_wind_direction(self, time_index: int = None) -> np.ndarray:
+        """
+        Compute 10-meter wind direction from U10 and V10 components.
+
+        Wind direction is meteorological convention: direction wind is coming FROM,
+        measured clockwise from north (0=N, 90=E, 180=S, 270=W).
+
+        Parameters
+        ----------
+        time_index : int, optional
+            Timestep index. If None, return all timesteps.
+
+        Returns
+        -------
+        np.ndarray
+            Wind direction in degrees (0-360).
+        """
+        u10 = self.get_variable('U10', time_index)
+        v10 = self.get_variable('V10', time_index)
+
+        # atan2 gives angle of wind vector (direction wind is going TO)
+        # Convert to meteorological convention (direction FROM)
+        wind_dir = (270.0 - np.degrees(np.arctan2(v10, u10))) % 360.0
+        return wind_dir
+
+    def get_rh(self, time_index: int = None) -> np.ndarray:
+        """
+        Compute 2-meter relative humidity from T2, Q2, and PSFC.
+
+        Uses the Magnus formula for saturation vapor pressure.
+
+        Parameters
+        ----------
+        time_index : int, optional
+            Timestep index. If None, return all timesteps.
+
+        Returns
+        -------
+        np.ndarray
+            Relative humidity as percentage (0-100).
+        """
+        t2 = self.get_variable('T2', time_index)
+        q2 = self.get_variable('Q2', time_index)
+        psfc = self.get_variable('PSFC', time_index)
+
+        return self._compute_rh(t2, q2, psfc)
+
+    @staticmethod
+    def _compute_rh(t2: np.ndarray, q2: np.ndarray, psfc: np.ndarray) -> np.ndarray:
+        """
+        Compute relative humidity from temperature, mixing ratio, and pressure.
+
+        Parameters
+        ----------
+        t2 : np.ndarray
+            2-meter temperature in Kelvin.
+        q2 : np.ndarray
+            2-meter water vapor mixing ratio in kg/kg.
+        psfc : np.ndarray
+            Surface pressure in Pa.
+
+        Returns
+        -------
+        np.ndarray
+            Relative humidity as percentage (0-100).
+        """
+        # Convert temperature to Celsius
+        t_celsius = t2 - 273.15
+
+        # Saturation vapor pressure using Magnus formula (Pa)
+        # Valid for -40C to 50C
+        es = 611.2 * np.exp((17.67 * t_celsius) / (t_celsius + 243.5))
+
+        # Actual vapor pressure from mixing ratio
+        # e = q * p / (0.622 + q) where q is mixing ratio
+        e = (q2 * psfc) / (0.622 + q2)
+
+        # Relative humidity
+        rh = (e / es) * 100.0
+
+        # Clip to valid range
+        return np.clip(rh, 0.0, 100.0)
+
+    def get_dewpoint(self, time_index: int = None) -> np.ndarray:
+        """
+        Compute 2-meter dewpoint temperature from T2, Q2, and PSFC.
+
+        Parameters
+        ----------
+        time_index : int, optional
+            Timestep index. If None, return all timesteps.
+
+        Returns
+        -------
+        np.ndarray
+            Dewpoint temperature in Kelvin.
+        """
+        t2 = self.get_variable('T2', time_index)
+        q2 = self.get_variable('Q2', time_index)
+        psfc = self.get_variable('PSFC', time_index)
+
+        return self._compute_dewpoint(t2, q2, psfc)
+
+    @staticmethod
+    def _compute_dewpoint(t2: np.ndarray, q2: np.ndarray, psfc: np.ndarray) -> np.ndarray:
+        """
+        Compute dewpoint temperature from temperature, mixing ratio, and pressure.
+
+        Parameters
+        ----------
+        t2 : np.ndarray
+            2-meter temperature in Kelvin.
+        q2 : np.ndarray
+            2-meter water vapor mixing ratio in kg/kg.
+        psfc : np.ndarray
+            Surface pressure in Pa.
+
+        Returns
+        -------
+        np.ndarray
+            Dewpoint temperature in Kelvin.
+        """
+        # Actual vapor pressure from mixing ratio (Pa)
+        e = (q2 * psfc) / (0.622 + q2)
+
+        # Inverse Magnus formula to get dewpoint
+        # Td = 243.5 * ln(e/611.2) / (17.67 - ln(e/611.2))
+        ln_ratio = np.log(e / 611.2)
+        td_celsius = (243.5 * ln_ratio) / (17.67 - ln_ratio)
+
+        # Convert back to Kelvin
+        return td_celsius + 273.15
+
+    def get_theta(self, time_index: int = None) -> np.ndarray:
+        """
+        Compute 2-meter potential temperature from T2 and PSFC.
+
+        Parameters
+        ----------
+        time_index : int, optional
+            Timestep index. If None, return all timesteps.
+
+        Returns
+        -------
+        np.ndarray
+            Potential temperature in Kelvin.
+        """
+        t2 = self.get_variable('T2', time_index)
+        psfc = self.get_variable('PSFC', time_index)
+
+        # Reference pressure (Pa)
+        P0 = 100000.0
+        # Ratio of gas constant to specific heat at constant pressure
+        KAPPA = 0.286
+
+        return t2 * (P0 / psfc) ** KAPPA
+
+    def get_theta_e(self, time_index: int = None) -> np.ndarray:
+        """
+        Compute 2-meter equivalent potential temperature.
+
+        Uses Bolton (1980) approximation.
+
+        Parameters
+        ----------
+        time_index : int, optional
+            Timestep index. If None, return all timesteps.
+
+        Returns
+        -------
+        np.ndarray
+            Equivalent potential temperature in Kelvin.
+        """
+        t2 = self.get_variable('T2', time_index)
+        q2 = self.get_variable('Q2', time_index)
+        psfc = self.get_variable('PSFC', time_index)
+
+        return self._compute_theta_e(t2, q2, psfc)
+
+    @staticmethod
+    def _compute_theta_e(t2: np.ndarray, q2: np.ndarray, psfc: np.ndarray) -> np.ndarray:
+        """
+        Compute equivalent potential temperature using Bolton (1980) formula.
+
+        Parameters
+        ----------
+        t2 : np.ndarray
+            Temperature in Kelvin.
+        q2 : np.ndarray
+            Water vapor mixing ratio in kg/kg.
+        psfc : np.ndarray
+            Surface pressure in Pa.
+
+        Returns
+        -------
+        np.ndarray
+            Equivalent potential temperature in Kelvin.
+        """
+        P0 = 100000.0
+        KAPPA = 0.286
+
+        # Lifting condensation level temperature (K) - Bolton (1980) Eq. 15
+        t_lcl = 1.0 / (1.0 / (t2 - 55.0) - np.log(WRFFile._compute_rh(t2, q2, psfc) / 100.0) / 2840.0) + 55.0
+
+        # Equivalent potential temperature - Bolton (1980) Eq. 38
+        # Convert mixing ratio to g/kg for formula
+        r = q2 * 1000.0
+
+        theta_e = t2 * (P0 / psfc) ** (KAPPA * (1.0 - 0.28e-3 * r)) * np.exp(
+            (3.376 / t_lcl - 0.00254) * r * (1.0 + 0.81e-3 * r)
+        )
+
+        return theta_e
+
 
 class NetCDF4Writer:
     """
