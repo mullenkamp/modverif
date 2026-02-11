@@ -8,16 +8,18 @@ import h5py
 import numpy as np
 import pytest
 
-from model_eval.evaluate import (
-    AVAILABLE_DOMAIN_METRICS,
-    AVAILABLE_METRICS,
-    _find_latlon_bounds,
+from model_eval.metrics import (
     compute_ane,
     compute_ane_domain,
     compute_ne,
     compute_ne_domain,
     compute_rmse_domain,
     compute_rse,
+)
+from model_eval.evaluate import (
+    AVAILABLE_DOMAIN_METRICS,
+    AVAILABLE_METRICS,
+    _find_latlon_bounds,
     evaluate_cyclones,
     evaluate_models_cell,
     evaluate_models_domain,
@@ -133,155 +135,6 @@ class TestFindWrfoutFiles:
         assert len(result) == 2
         assert date(2020, 9, 29) in result
         assert date(2020, 9, 30) in result
-
-
-class TestComputeNE:
-    """Tests for compute_normalised_error function."""
-
-    def test_basic_calculation(self):
-        """Should compute NE = ((test - source) / source) * 100."""
-        source = np.array([100.0, 200.0, 50.0])
-        test = np.array([110.0, 180.0, 75.0])
-
-        result = compute_ne(source, test)
-
-        expected = np.array([10, -10, 50], dtype=np.int16)
-        np.testing.assert_array_equal(result, expected)
-
-    def test_handles_zero_source(self):
-        """Should return 0 when source is near zero."""
-        source = np.array([0.0, 1e-15, 100.0])
-        test = np.array([10.0, 10.0, 110.0])
-
-        result = compute_ne(source, test, epsilon=1e-10)
-
-        assert result[0] == 0
-        assert result[1] == 0
-        assert result[2] == 10
-
-    def test_clips_to_int16_range(self):
-        """Should clip extreme values to int16 range."""
-        source = np.array([1.0, 1.0])
-        test = np.array([1000.0, -1000.0])  # 99900% and -100100%
-
-        result = compute_ne(source, test)
-
-        assert result[0] == 32767  # INT16_MAX
-        assert result[1] == -32768  # INT16_MIN
-
-    def test_handles_nan_and_inf(self):
-        """Should handle NaN and Inf values gracefully."""
-        source = np.array([1.0, 0.0, -0.0])
-        test = np.array([np.nan, 1.0, 1.0])
-
-        result = compute_ne(source, test)
-
-        # All should be valid int16 values (no NaN/Inf)
-        assert np.all(np.isfinite(result.astype(float)))
-
-    def test_multidimensional_array(self):
-        """Should work with multidimensional arrays."""
-        source = np.ones((2, 3, 4)) * 100
-        test = np.ones((2, 3, 4)) * 110
-
-        result = compute_ne(source, test)
-
-        assert result.shape == (2, 3, 4)
-        assert np.all(result == 10)
-
-    def test_returns_int16_dtype(self):
-        """Should always return int16 dtype."""
-        source = np.array([100.0], dtype=np.float64)
-        test = np.array([110.0], dtype=np.float64)
-
-        result = compute_ne(source, test)
-
-        assert result.dtype == np.int16
-
-
-class TestComputeANE:
-    """Tests for compute_mean_absolute_normalised_error function."""
-
-    def test_basic_calculation(self):
-        """Should compute ANE = |((test - source) / source)| * 100."""
-        source = np.array([100.0, 200.0, 50.0])
-        test = np.array([110.0, 180.0, 75.0])  # +10%, -10%, +50%
-
-        result = compute_ane(source, test)
-
-        expected = np.array([10, 10, 50], dtype=np.int16)  # All positive
-        np.testing.assert_array_equal(result, expected)
-
-    def test_always_positive(self):
-        """Should always return positive values."""
-        source = np.array([100.0, 100.0])
-        test = np.array([50.0, 150.0])  # -50% and +50%
-
-        result = compute_ane(source, test)
-
-        assert np.all(result >= 0)
-        np.testing.assert_array_equal(result, [50, 50])
-
-    def test_handles_zero_source(self):
-        """Should return 0 when source is near zero."""
-        source = np.array([0.0, 100.0])
-        test = np.array([10.0, 110.0])
-
-        result = compute_ane(source, test, epsilon=1e-10)
-
-        assert result[0] == 0
-        assert result[1] == 10
-
-    def test_returns_int16_dtype(self):
-        """Should always return int16 dtype."""
-        source = np.array([100.0], dtype=np.float64)
-        test = np.array([110.0], dtype=np.float64)
-
-        result = compute_ane(source, test)
-
-        assert result.dtype == np.int16
-
-
-class TestComputeRSE:
-    """Tests for compute_rse function."""
-
-    def test_basic_calculation(self):
-        """Should compute RSE = sqrt((test - source)^2)."""
-        source = np.array([100.0, 200.0, 50.0])
-        test = np.array([110.0, 180.0, 75.0])  # diff: 10, -20, 25
-
-        result = compute_rse(source, test)
-
-        expected = np.array([10.0, 20.0, 25.0], dtype=np.float32)
-        np.testing.assert_array_almost_equal(result, expected)
-
-    def test_always_positive(self):
-        """Should always return positive values."""
-        source = np.array([100.0, 100.0])
-        test = np.array([50.0, 150.0])  # diff: -50 and +50
-
-        result = compute_rse(source, test)
-
-        assert np.all(result >= 0)
-        np.testing.assert_array_almost_equal(result, [50.0, 50.0])
-
-    def test_zero_when_identical(self):
-        """Should return 0 when source and test are identical."""
-        source = np.array([100.0, 200.0, 50.0])
-        test = source.copy()
-
-        result = compute_rse(source, test)
-
-        np.testing.assert_array_equal(result, [0.0, 0.0, 0.0])
-
-    def test_returns_float32_dtype(self):
-        """Should always return float32 dtype."""
-        source = np.array([100.0], dtype=np.float64)
-        test = np.array([110.0], dtype=np.float64)
-
-        result = compute_rse(source, test)
-
-        assert result.dtype == np.float32
 
 
 def create_mock_wrfout(path: pathlib.Path, variables: list[str], shape: tuple, data_func=None):
@@ -640,6 +493,7 @@ class TestEvaluateModelsCell:
             domain=4,
             variables=variables,
             metrics=list(AVAILABLE_METRICS),
+            threshold=1.0,
         )
 
         with h5py.File(output_path, 'r') as f:
@@ -1226,335 +1080,47 @@ class TestEvaluateModelsCellIntegration:
 ##################################################
 
 
-class TestComputeNeDomain:
-    """Tests for compute_ne_domain function."""
-
-    def test_basic_calculation(self):
-        """Should compute NE = ((sum(test) - sum(source)) / sum(source)) * 100."""
-        # 2 timesteps, 3x3 spatial grid
-        source = np.ones((2, 3, 3)) * 100  # sum = 900 per timestep
-        test = np.ones((2, 3, 3)) * 110  # sum = 990 per timestep, 10% increase
-
-        result = compute_ne_domain(source, test)
-
-        assert result.shape == (2,)
-        np.testing.assert_array_almost_equal(result, [10.0, 10.0])
-
-    def test_with_mask(self):
-        """Should only aggregate over masked cells."""
-        source = np.ones((2, 4, 4)) * 100
-        test = np.ones((2, 4, 4)) * 110
-
-        # Mask that only includes center 2x2
-        mask = np.zeros((4, 4), dtype=bool)
-        mask[1:3, 1:3] = True  # 4 cells
-
-        result = compute_ne_domain(source, test, mask=mask)
-
-        # Still 10% error, just over fewer cells
-        np.testing.assert_array_almost_equal(result, [10.0, 10.0])
-
-    def test_handles_zero_source(self):
-        """Should return 0 when source sum is near zero."""
-        source = np.zeros((2, 3, 3))
-        test = np.ones((2, 3, 3)) * 10
-
-        result = compute_ne_domain(source, test, epsilon=1e-10)
-
-        np.testing.assert_array_equal(result, [0.0, 0.0])
-
-    def test_returns_float64(self):
-        """Should return float64 dtype."""
-        source = np.ones((2, 3, 3)) * 100
-        test = np.ones((2, 3, 3)) * 110
-
-        result = compute_ne_domain(source, test)
-
-        assert result.dtype == np.float64
-
-
-class TestComputeAneDomain:
-    """Tests for compute_ane_domain function."""
-
-    def test_returns_absolute_value(self):
-        """Should return absolute value of NE."""
-        source = np.ones((2, 3, 3)) * 100
-        test = np.ones((2, 3, 3)) * 90  # -10% error
-
-        result = compute_ane_domain(source, test)
-
-        np.testing.assert_array_almost_equal(result, [10.0, 10.0])  # Absolute
-
-    def test_always_positive(self):
-        """Should always return positive values."""
-        source = np.ones((2, 3, 3)) * 100
-        test = np.ones((2, 3, 3)) * 50  # -50% error
-
-        result = compute_ane_domain(source, test)
-
-        assert np.all(result >= 0)
-
-
-class TestComputeRmseDomain:
-    """Tests for compute_rmse_domain function."""
-
-    def test_basic_calculation(self):
-        """Should compute RMSE = sqrt(mean((test - source)^2))."""
-        source = np.ones((2, 3, 3)) * 100
-        test = np.ones((2, 3, 3)) * 110  # diff = 10 at each cell
-
-        result = compute_rmse_domain(source, test)
-
-        # RMSE should be 10 (sqrt(mean(100)) = sqrt(100) = 10)
-        np.testing.assert_array_almost_equal(result, [10.0, 10.0])
-
-    def test_with_varying_errors(self):
-        """Should correctly handle varying errors across domain."""
-        source = np.array([[[100, 100], [100, 100]]])  # (1, 2, 2)
-        test = np.array([[[110, 90], [120, 80]]])  # errors: 10, -10, 20, -20
-
-        result = compute_rmse_domain(source, test)
-
-        # squared errors: 100, 100, 400, 400; mean = 250; rmse = sqrt(250) ≈ 15.81
-        expected = np.sqrt(250)
-        np.testing.assert_array_almost_equal(result, [expected])
-
-    def test_with_mask(self):
-        """Should only include masked cells in RMSE calculation."""
-        source = np.ones((1, 4, 4)) * 100
-        test = np.ones((1, 4, 4)) * 100
-        test[0, 0, 0] = 200  # Large error in one cell
-
-        # Mask that excludes the error cell
-        mask = np.ones((4, 4), dtype=bool)
-        mask[0, 0] = False
-
-        result = compute_rmse_domain(source, test, mask=mask)
-
-        # Should be 0 since we excluded the error cell
-        np.testing.assert_array_almost_equal(result, [0.0])
-
-    def test_returns_float64(self):
-        """Should return float64 dtype."""
-        source = np.ones((2, 3, 3)) * 100
-        test = np.ones((2, 3, 3)) * 110
-
-        result = compute_rmse_domain(source, test)
-
-        assert result.dtype == np.float64
-
-
-class TestEvaluateModelsDomain:
-    """Tests for evaluate_models_domain function."""
-
-    def test_basic_evaluation(self, tmp_path):
-        """Should create output file with domain-aggregated metrics."""
+    def test_categorical_metrics(self, tmp_path):
+        """Should compute categorical metrics when threshold is provided."""
         source_dir = tmp_path / 'source'
         test_dir = tmp_path / 'test'
         source_dir.mkdir()
         test_dir.mkdir()
 
-        variables = ['T2', 'Q2']
-        shape = (4, 10, 10)
-
-        def source_data(var, shape):
-            return np.ones(shape, dtype=np.float32) * 100
-
-        def test_data(var, shape):
-            return np.ones(shape, dtype=np.float32) * 110
-
+        shape = (1, 10, 10)
         source_file = source_dir / make_wrfout_filename(4, "2020-09-30")
         test_file = test_dir / make_wrfout_filename(4, "2020-09-30")
-        create_mock_wrfout(source_file, variables, shape, source_data)
-        create_mock_wrfout(test_file, variables, shape, test_data)
 
-        output_path = tmp_path / 'output.nc'
-        result = evaluate_models_domain(
-            source_dir, test_dir, output_path, domain=4, variables=variables
-        )
-
-        assert result == output_path
-        assert output_path.exists()
-
-        with h5py.File(output_path, 'r') as f:
-            # Check variables exist with shape (time, metric)
-            assert 'T2' in f
-            assert 'Q2' in f
-            assert f['T2'].shape == (4, 1)  # 4 timesteps, 1 metric (default 'ne')
-
-            # Check NE is 10% everywhere
-            np.testing.assert_array_almost_equal(f['T2'][:, 0], 10.0)
-
-    def test_multiple_metrics(self, tmp_path):
-        """Should compute multiple metrics with metric dimension."""
-        source_dir = tmp_path / 'source'
-        test_dir = tmp_path / 'test'
-        source_dir.mkdir()
-        test_dir.mkdir()
-
-        variables = ['T2']
-        shape = (2, 5, 5)
-
-        def source_data(var, shape):
-            return np.ones(shape, dtype=np.float32) * 100
-
-        def test_data(var, shape):
-            return np.ones(shape, dtype=np.float32) * 110
-
-        source_file = source_dir / make_wrfout_filename(4, "2020-09-30")
-        test_file = test_dir / make_wrfout_filename(4, "2020-09-30")
-        create_mock_wrfout(source_file, variables, shape, source_data)
-        create_mock_wrfout(test_file, variables, shape, test_data)
+        # 10x10 grid = 100 cells.
+        # Hits: row 0, cols 0-9 (10 cells)
+        # Misses: row 1, cols 0-4 (5 cells)
+        # False Alarms: row 2, cols 0-4 (5 cells)
+        
+        # source: 10 hits (0, 0-9), 5 misses (1, 0-4) = 15 total yes
+        source_data = np.zeros(shape, dtype=np.float32)
+        source_data[0, 0, 0:10] = 2.0 
+        source_data[0, 1, 0:5] = 2.0
+        with h5py.File(source_file, 'w') as f:
+            f.create_dataset('RAINNC', data=source_data)
+        
+        # test: 10 hits (0, 0-9), 5 false alarms (2, 0-4) = 15 total yes
+        test_data = np.zeros(shape, dtype=np.float32)
+        test_data[0, 0, 0:10] = 2.0
+        test_data[0, 2, 0:5] = 2.0
+        with h5py.File(test_file, 'w') as f:
+            f.create_dataset('RAINNC', data=test_data)
 
         output_path = tmp_path / 'output.nc'
         evaluate_models_domain(
-            source_dir,
-            test_dir,
-            output_path,
-            domain=4,
-            variables=variables,
-            metrics=['ne', 'ane', 'rmse'],
+            source_dir, test_dir, output_path, domain=4, variables=['RAINNC'],
+            metrics=['pod', 'far'], threshold=1.0
         )
 
         with h5py.File(output_path, 'r') as f:
-            # Check shape is (time, metric)
-            assert f['T2'].shape == (2, 3)
-
-            # Check metric coordinate
-            assert 'metric' in f
-            assert f['metric'].shape == (3,)
-            assert f['metric'].attrs['flag_meanings'] == b'ne ane rmse'
-
-            # Check values
-            np.testing.assert_array_almost_equal(f['T2'][:, 0], 10.0)  # NE
-            np.testing.assert_array_almost_equal(f['T2'][:, 1], 10.0)  # ANE
-            np.testing.assert_array_almost_equal(f['T2'][:, 2], 10.0)  # RMSE
-
-    def test_output_structure(self, tmp_path):
-        """Should create proper NetCDF4 structure with dimensions."""
-        source_dir = tmp_path / 'source'
-        test_dir = tmp_path / 'test'
-        source_dir.mkdir()
-        test_dir.mkdir()
-
-        shape = (3, 5, 5)
-        source_file = source_dir / make_wrfout_filename(4, "2020-09-30")
-        test_file = test_dir / make_wrfout_filename(4, "2020-09-30")
-        create_mock_wrfout(source_file, ['T2'], shape)
-        create_mock_wrfout(test_file, ['T2'], shape)
-
-        output_path = tmp_path / 'output.nc'
-        evaluate_models_domain(
-            source_dir,
-            test_dir,
-            output_path,
-            domain=4,
-            variables=['T2'],
-            metrics=['ne', 'rmse'],
-        )
-
-        with h5py.File(output_path, 'r') as f:
-            # Check global attributes
-            assert f.attrs['Conventions'] == b'CF-1.8'
-            assert f.attrs['aggregation_type'] == b'domain'
-
-            # Check dimensions exist
-            assert 'time' in f
-            assert 'metric' in f
-
-            # Check T2 has correct dimensions
-            assert f['T2'].shape == (3, 2)
-
-    def test_raises_on_invalid_metric(self, tmp_path):
-        """Should raise ValueError for unknown metric."""
-        source_dir = tmp_path / 'source'
-        test_dir = tmp_path / 'test'
-        source_dir.mkdir()
-        test_dir.mkdir()
-
-        shape = (2, 5, 5)
-        source_file = source_dir / make_wrfout_filename(4, "2020-09-30")
-        test_file = test_dir / make_wrfout_filename(4, "2020-09-30")
-        create_mock_wrfout(source_file, ['T2'], shape)
-        create_mock_wrfout(test_file, ['T2'], shape)
-
-        with pytest.raises(ValueError, match="Unknown metric"):
-            evaluate_models_domain(
-                source_dir,
-                test_dir,
-                tmp_path / 'output.nc',
-                domain=4,
-                variables=['T2'],
-                metrics='invalid_metric',
-            )
-
-    def test_with_spatial_mask(self, tmp_path):
-        """Should aggregate only over masked cells."""
-        source_dir = tmp_path / 'source'
-        test_dir = tmp_path / 'test'
-        source_dir.mkdir()
-        test_dir.mkdir()
-
-        variables = ['T2']
-        shape = (2, 10, 10)
-
-        def source_data(var, shape):
-            return np.ones(shape, dtype=np.float32) * 100
-
-        def test_data(var, shape):
-            data = np.ones(shape, dtype=np.float32) * 100
-            # Only add error in center region
-            data[:, 4:6, 4:6] = 110
-            return data
-
-        source_file = source_dir / make_wrfout_filename(4, "2020-09-30")
-        test_file = test_dir / make_wrfout_filename(4, "2020-09-30")
-        create_mock_wrfout(source_file, variables, shape, source_data)
-        create_mock_wrfout(test_file, variables, shape, test_data)
-
-        # Mask that only includes the center region with error
-        mask = np.zeros((10, 10), dtype=bool)
-        mask[4:6, 4:6] = True
-
-        output_path = tmp_path / 'output.nc'
-        evaluate_models_domain(
-            source_dir,
-            test_dir,
-            output_path,
-            domain=4,
-            variables=variables,
-            region=mask,
-        )
-
-        with h5py.File(output_path, 'r') as f:
-            # NE should be 10% since we only look at the center
-            np.testing.assert_array_almost_equal(f['T2'][:, 0], 10.0)
-
-    def test_multiple_dates(self, tmp_path):
-        """Should handle multiple dates and concatenate along time."""
-        source_dir = tmp_path / 'source'
-        test_dir = tmp_path / 'test'
-        source_dir.mkdir()
-        test_dir.mkdir()
-
-        variables = ['T2']
-        shape = (3, 5, 5)
-
-        for date_str in ['2020-09-30', '2020-10-01']:
-            source_file = source_dir / make_wrfout_filename(4, date_str)
-            test_file = test_dir / make_wrfout_filename(4, date_str)
-            create_mock_wrfout(source_file, variables, shape)
-            create_mock_wrfout(test_file, variables, shape)
-
-        output_path = tmp_path / 'output.nc'
-        evaluate_models_domain(
-            source_dir, test_dir, output_path, domain=4, variables=variables
-        )
-
-        with h5py.File(output_path, 'r') as f:
-            # Should have 6 timesteps (3 per file * 2 files)
-            assert f['T2'].shape == (6, 1)
-            assert f['time'].shape == (6,)
+            # POD = Hits / (Hits + Misses) = 10 / (10 + 5) = 10/15
+            # FAR = FA / (Hits + FA) = 5 / (10 + 5) = 5/15
+            np.testing.assert_allclose(f['RAINNC'][0, 0], 10/15, rtol=1e-5)
+            np.testing.assert_allclose(f['RAINNC'][0, 1], 5/15, rtol=1e-5)
 
 
 class TestEvaluateModelsDomainIntegration:

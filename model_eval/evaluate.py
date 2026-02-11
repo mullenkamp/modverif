@@ -26,27 +26,32 @@ from model_eval.cyclone import (
 #     _haversine_distance,
 # )
 
+from model_eval.metrics import (
+    AVAILABLE_DOMAIN_METRICS,
+    AVAILABLE_METRICS,
+    ContingencyTable,
+    _get_domain_metric_info,
+    _get_metric_info,
+    compute_ane,
+    compute_ane_domain,
+    compute_bias,
+    compute_bias_domain,
+    compute_ne,
+    compute_ne_domain,
+    compute_rmse_domain,
+    compute_rse,
+)
 from model_eval.wrfio import NetCDF4Writer, WRFFile
 # from wrfio import NetCDF4Writer, WRFFile
 
 ###################################################
 ### Parameters
 
-# int16 range for clipping NE values
-INT16_MIN = -32768
-INT16_MAX = 32767
-
 # NetCDF4 dimension scale marker
 DIMENSION_LIST = 'DIMENSION_LIST'
 CLASS = 'CLASS'
 NAME = 'NAME'
 REFERENCE_LIST = 'REFERENCE_LIST'
-
-# Available domain-aggregated metrics
-AVAILABLE_DOMAIN_METRICS = ('ne', 'ane', 'rmse')
-
-# Available metrics
-AVAILABLE_METRICS = ('ne', 'ane', 'rse')
 
 time_units_dict = {
     'M': 'months',
@@ -84,43 +89,6 @@ def parse_cf_dates(units, dtype_encoded):
         origin_date = None
 
     return units, dtype_decoded, dtype_encoded, origin_date
-
-
-def _get_metric_info(metric: str) -> dict:
-    """
-    Get metadata for a metric.
-
-    Parameters
-    ----------
-    metric : str
-        Metric name ('ne', 'ane', 'rse').
-
-    Returns
-    -------
-    dict
-        Dictionary with 'dtype', 'units', 'long_name', 'standard_name' keys.
-    """
-    info = {
-        'ne': {
-            'dtype': np.int16,
-            'units': 'percent',
-            'long_name': 'Normalised Error',
-            'standard_name': 'normalised_error',
-        },
-        'ane': {
-            'dtype': np.int16,
-            'units': 'percent',
-            'long_name': 'Mean Absolute Normalised Error',
-            'standard_name': 'mean_absolute_normalised_error',
-        },
-        'rse': {
-            'dtype': np.float32,
-            'units': 'same as variable',
-            'long_name': 'Root Mean Square Error',
-            'standard_name': 'root_mean_square_error',
-        },
-    }
-    return info[metric]
 
 
 def find_wrfout_files(
@@ -178,282 +146,8 @@ def find_wrfout_files(
     return files
 
 
-def compute_ne(
-    source_data: np.ndarray,
-    test_data: np.ndarray,
-    epsilon: float = 1e-10,
-) -> np.ndarray:
-    """
-    Compute normalised error between source and test data, returning int16.
-
-    NE = ((test - source) / source) * 100
-
-    Values are clipped to int16 range [-32768, 32767] percent.
-
-    Parameters
-    ----------
-    source_data : np.ndarray
-        Reference/baseline model data.
-    test_data : np.ndarray
-        Test model data to compare against source.
-    epsilon : float
-        Small value to avoid division by zero. Values where |source| < epsilon
-        will have NE set to 0.
-
-    Returns
-    -------
-    np.ndarray
-        Normalised error as percentage (int16, clipped to ±32767%).
-    """
-    with np.errstate(divide='ignore', invalid='ignore'):
-        ne = ((test_data - source_data) / source_data) * 100
-
-    # Handle division by zero/small values
-    mask = np.abs(source_data) < epsilon
-    ne[mask] = 0.0
-
-    # Replace any remaining inf/nan and clip to int16 range
-    ne = np.nan_to_num(ne, nan=0.0, posinf=INT16_MAX, neginf=INT16_MIN)
-    ne = np.clip(ne, INT16_MIN, INT16_MAX)
-
-    return np.round(ne).astype(np.int16)
-
-
-def compute_ane(
-    source_data: np.ndarray,
-    test_data: np.ndarray,
-    epsilon: float = 1e-10,
-) -> np.ndarray:
-    """
-    Compute absolute normalised error between source and test data, returning int16.
-
-    ANE = |((test - source) / source)| * 100
-
-    Values are clipped to int16 range [0, 32767] percent.
-
-    Parameters
-    ----------
-    source_data : np.ndarray
-        Reference/baseline model data.
-    test_data : np.ndarray
-        Test model data to compare against source.
-    epsilon : float
-        Small value to avoid division by zero. Values where |source| < epsilon
-        will have ANE set to 0.
-
-    Returns
-    -------
-    np.ndarray
-        Absolute normalised error as percentage (int16, clipped to 0-32767%).
-    """
-    with np.errstate(divide='ignore', invalid='ignore'):
-        ane = np.abs((test_data - source_data) / source_data) * 100
-
-    # Handle division by zero/small values
-    mask = np.abs(source_data) < epsilon
-    ane[mask] = 0.0
-
-    # Replace any remaining inf/nan and clip to int16 range (positive only)
-    ane = np.nan_to_num(ane, nan=0.0, posinf=INT16_MAX, neginf=0.0)
-    ane = np.clip(ane, 0, INT16_MAX)
-
-    return np.round(ane).astype(np.int16)
-
-
-def compute_rse(
-    source_data: np.ndarray,
-    test_data: np.ndarray,
-) -> np.ndarray:
-    """
-    Compute root squared error between source and test data.
-
-    RSE = sqrt((test - source)^2)
-
-    This is computed element-wise (per grid cell per timestep), preserving
-    the original array shape. For a single RSE value over a region or time
-    period, further aggregation would be needed.
-
-    Parameters
-    ----------
-    source_data : np.ndarray
-        Reference/baseline model data.
-    test_data : np.ndarray
-        Test model data to compare against source.
-
-    Returns
-    -------
-    np.ndarray
-        Root squared error in same units as input (float32).
-    """
-    rse = np.sqrt((test_data - source_data) ** 2)
-    return rse.astype(np.float32)
-
-
 ##################################################
 ### Domain-aggregated metric functions
-
-
-def compute_ne_domain(
-    source_data: np.ndarray,
-    test_data: np.ndarray,
-    mask: np.ndarray = None,
-    epsilon: float = 1e-10,
-) -> np.ndarray:
-    """
-    Compute domain-aggregated normalised error for each timestep.
-
-    NE_domain = ((sum(test) - sum(source)) / sum(source)) * 100
-
-    This aggregates over the spatial domain first, then computes the
-    normalised error. Useful when cell-by-cell comparison is inappropriate
-    due to spatial alignment differences.
-
-    Parameters
-    ----------
-    source_data : np.ndarray
-        Reference/baseline model data with shape (time, y, x).
-    test_data : np.ndarray
-        Test model data with shape (time, y, x).
-    mask : np.ndarray, optional
-        2D boolean mask (y, x). True = include cell. If None, use all cells.
-    epsilon : float
-        Small value to avoid division by zero.
-
-    Returns
-    -------
-    np.ndarray
-        Normalised error as percentage for each timestep (float64, shape: (time,)).
-    """
-    if mask is not None:
-        # Apply mask - set masked cells to 0 for summation
-        source_masked = np.where(mask, source_data, 0.0)
-        test_masked = np.where(mask, test_data, 0.0)
-    else:
-        source_masked = source_data
-        test_masked = test_data
-
-    # Sum over spatial dimensions (axes 1 and 2)
-    source_sum = np.sum(source_masked, axis=(1, 2))
-    test_sum = np.sum(test_masked, axis=(1, 2))
-
-    # Compute normalised error
-    with np.errstate(divide='ignore', invalid='ignore'):
-        ne = ((test_sum - source_sum) / source_sum) * 100
-
-    # Handle division by zero
-    ne = np.where(np.abs(source_sum) < epsilon, 0.0, ne)
-    ne = np.nan_to_num(ne, nan=0.0, posinf=0.0, neginf=0.0)
-
-    return ne
-
-
-def compute_ane_domain(
-    source_data: np.ndarray,
-    test_data: np.ndarray,
-    mask: np.ndarray = None,
-    epsilon: float = 1e-10,
-) -> np.ndarray:
-    """
-    Compute domain-aggregated absolute normalised error for each timestep.
-
-    ANE_domain = |((sum(test) - sum(source)) / sum(source))| * 100
-
-    Parameters
-    ----------
-    source_data : np.ndarray
-        Reference/baseline model data with shape (time, y, x).
-    test_data : np.ndarray
-        Test model data with shape (time, y, x).
-    mask : np.ndarray, optional
-        2D boolean mask (y, x). True = include cell. If None, use all cells.
-    epsilon : float
-        Small value to avoid division by zero.
-
-    Returns
-    -------
-    np.ndarray
-        Absolute normalised error as percentage for each timestep (float64, shape: (time,)).
-    """
-    ne = compute_ne_domain(source_data, test_data, mask, epsilon)
-    return np.abs(ne)
-
-
-def compute_rmse_domain(
-    source_data: np.ndarray,
-    test_data: np.ndarray,
-    mask: np.ndarray = None,
-) -> np.ndarray:
-    """
-    Compute domain-aggregated root mean square error for each timestep.
-
-    RMSE_domain = sqrt(mean((test - source)^2))
-
-    This computes the RMSE across all spatial cells at each timestep.
-
-    Parameters
-    ----------
-    source_data : np.ndarray
-        Reference/baseline model data with shape (time, y, x).
-    test_data : np.ndarray
-        Test model data with shape (time, y, x).
-    mask : np.ndarray, optional
-        2D boolean mask (y, x). True = include cell. If None, use all cells.
-
-    Returns
-    -------
-    np.ndarray
-        RMSE in same units as input for each timestep (float64, shape: (time,)).
-    """
-    squared_error = (test_data - source_data) ** 2
-
-    if mask is not None:
-        # Apply mask - only include masked cells in mean
-        n_cells = np.sum(mask)
-        squared_error_masked = np.where(mask, squared_error, 0.0)
-        mse = np.sum(squared_error_masked, axis=(1, 2)) / n_cells
-    else:
-        mse = np.mean(squared_error, axis=(1, 2))
-
-    rmse = np.sqrt(mse)
-    return rmse
-
-
-def _get_domain_metric_info(metric: str) -> dict:
-    """
-    Get metadata for a domain-aggregated metric.
-
-    Parameters
-    ----------
-    metric : str
-        Metric name ('ne', 'ane', 'rmse').
-
-    Returns
-    -------
-    dict
-        Dictionary with 'dtype', 'units', 'long_name', 'standard_name' keys.
-    """
-    info = {
-        'ne': {
-            'dtype': np.float64,
-            'units': 'percent',
-            'long_name': 'Domain-aggregated Normalised Error',
-            'standard_name': 'domain_normalised_error',
-        },
-        'ane': {
-            'dtype': np.float64,
-            'units': 'percent',
-            'long_name': 'Domain-aggregated Absolute Normalised Error',
-            'standard_name': 'domain_absolute_normalised_error',
-        },
-        'rmse': {
-            'dtype': np.float64,
-            'units': 'same as variable',
-            'long_name': 'Domain-aggregated Root Mean Square Error',
-            'standard_name': 'domain_root_mean_square_error',
-        },
-    }
-    return info[metric]
-
 
 def _make_netcdf4_dimension(h5file: h5py.File, name: str, size: int, data: np.ndarray = None) -> h5py.Dataset:
     """
@@ -609,6 +303,7 @@ def evaluate_models_cell(
     region: Union[tuple[float, float, float, float], np.ndarray, None] = None,
     start_date: Union[str, date] = None,
     end_date: Union[str, date] = None,
+    threshold: float = None,
     epsilon: float = 1e-10,
     max_memory_bytes: int = 2**29,
 ) -> pathlib.Path:
@@ -638,6 +333,8 @@ def evaluate_models_cell(
         - 'ne': Normalised Error = ((test - source) / source) * 100 [int16, percent]
         - 'ane': Absolute Normalised Error = |NE| [int16, percent]
         - 'rse': Root Squared Error = sqrt((test - source)^2) [float32, same units]
+        - 'bias': Mean Error = test - source [float32, same units]
+        - 'pod', 'far', 'csi', 'gss', 'fbias': Categorical metrics (require threshold).
         Can be a single string or list of strings. Default is 'ne'.
     region : tuple or np.ndarray, optional
         Spatial region to evaluate. Can be either:
@@ -652,6 +349,8 @@ def evaluate_models_cell(
     end_date : str or date, optional
         End date (inclusive) for evaluation period. Can be ISO format string
         (e.g., '2020-10-15') or date object. If None, no upper bound.
+    threshold : float, optional
+        Threshold for categorical metrics. Required if categorical metrics are used.
     epsilon : float
         Small value to avoid division by zero in NE/ANE calculation.
     max_memory_bytes : int
@@ -976,6 +675,39 @@ def evaluate_models_cell(
                                 result = compute_ane(source_data, test_data, epsilon)
                             elif metric == 'rse':
                                 result = compute_rse(source_data, test_data)
+                            elif metric == 'bias':
+                                result = compute_bias(source_data, test_data)
+                            elif metric in ('pod', 'far', 'csi', 'gss', 'fbias'):
+                                if threshold is None:
+                                    raise ValueError(f"Threshold required for categorical metric '{metric}'")
+                                # For cell-by-cell categorical, we need to handle it per-cell
+                                # but usually categorical metrics are aggregated.
+                                # However, if requested per-cell, we can still compute binary outcomes.
+                                # This might be less common but follows the API.
+                                source_yes = source_data >= threshold
+                                test_yes = test_data >= threshold
+                                if metric == 'pod':
+                                    # Hit=1, Miss=0, but POD per cell is just source_yes & test_yes
+                                    # This is a bit weird for per-cell. 
+                                    # Usually, POD is (Hits / (Hits + Misses)).
+                                    # For a single cell, it's either 1 (Hit) or 0 (Miss) IF observation was yes.
+                                    # If observation was no, it's undefined (NaN).
+                                    result = np.where(source_yes, test_yes.astype(np.float32), np.nan)
+                                elif metric == 'far':
+                                    # False Alarm = 1 if test_yes and not source_yes
+                                    result = np.where(test_yes, (~source_yes).astype(np.float32), np.nan)
+                                elif metric == 'csi':
+                                    # CSI = Hit / (Hit + FA + Miss)
+                                    # For single cell: 1 if both yes, 0 if only one yes, NaN if both no.
+                                    union = source_yes | test_yes
+                                    result = np.where(union, (source_yes & test_yes).astype(np.float32), np.nan)
+                                else:
+                                    # GSS and FBIAS are hard to define strictly per-cell.
+                                    # Let's fallback to binary Hit/FA/Miss/CN for now if needed,
+                                    # or just Hits for these.
+                                    result = (source_yes & test_yes).astype(np.float32)
+                            else:
+                                raise ValueError(f"Unsupported metric for cell-by-cell: {metric}")
 
                             # Apply spatial mask if provided
                             if use_mask and spatial_mask is not None:
@@ -1005,6 +737,7 @@ def evaluate_models_domain(
     region: Union[tuple[float, float, float, float], np.ndarray, None] = None,
     start_date: Union[str, date] = None,
     end_date: Union[str, date] = None,
+    threshold: float = None,
     epsilon: float = 1e-10,
     max_memory_bytes: int = 2**29,
 ) -> pathlib.Path:
@@ -1039,6 +772,8 @@ def evaluate_models_domain(
         - 'ne': Normalised Error = ((sum(test) - sum(source)) / sum(source)) * 100
         - 'ane': Absolute Normalised Error = |NE|
         - 'rmse': Root Mean Square Error = sqrt(mean((test - source)^2))
+        - 'bias': Mean Error = mean(test - source)
+        - 'pod', 'far', 'csi', 'gss', 'fbias': Categorical metrics (require threshold).
         Can be a single string or list of strings. Default is 'ne'.
     region : tuple or np.ndarray, optional
         Spatial region to aggregate over. Can be either:
@@ -1049,6 +784,8 @@ def evaluate_models_domain(
         Start date (inclusive) for evaluation period.
     end_date : str or date, optional
         End date (inclusive) for evaluation period.
+    threshold : float, optional
+        Threshold for categorical metrics. Required if categorical metrics are used.
     epsilon : float
         Small value to avoid division by zero in NE/ANE calculation.
     max_memory_bytes : int
@@ -1292,25 +1029,54 @@ def evaluate_models_domain(
                     )
 
                     # Accumulate data for this file to compute domain metrics
-                    for (source_slices, source_data), (_, test_data) in zip(
+                    for (source_slices, source_data_step), (_, test_data_step) in zip(
                         source_rechunker, test_rechunker
                     ):
                         # Apply spatial subsetting if using lat/lon bounds
                         if y_slice != slice(None) or x_slice != slice(None):
-                            source_data = source_data[:, y_slice, x_slice]
-                            test_data = test_data[:, y_slice, x_slice]
+                            source_data_step = source_data_step[:, y_slice, x_slice]
+                            test_data_step = test_data_step[:, y_slice, x_slice]
 
-                        # Compute domain-aggregated metrics
+                        # Adjust time slice for output position
                         out_time_start = time_offset + source_slices[0].start
                         out_time_stop = time_offset + source_slices[0].stop
 
                         for metric in metrics:
                             if metric == 'ne':
-                                result = compute_ne_domain(source_data, test_data, spatial_mask, epsilon)
+                                result = compute_ne_domain(source_data_step, test_data_step, spatial_mask, epsilon)
                             elif metric == 'ane':
-                                result = compute_ane_domain(source_data, test_data, spatial_mask, epsilon)
+                                result = compute_ane_domain(source_data_step, test_data_step, spatial_mask, epsilon)
                             elif metric == 'rmse':
-                                result = compute_rmse_domain(source_data, test_data, spatial_mask)
+                                result = compute_rmse_domain(source_data_step, test_data_step, spatial_mask)
+                            elif metric == 'bias':
+                                result = compute_bias_domain(source_data_step, test_data_step, spatial_mask)
+                            elif metric in ('pod', 'far', 'csi', 'gss', 'fbias'):
+                                if threshold is None:
+                                    raise ValueError(f"Threshold required for categorical metric '{metric}'")
+                                
+                                # Process each timestep in the chunk
+                                n_steps = source_data_step.shape[0]
+                                result = np.zeros(n_steps, dtype=np.float64)
+                                for i in range(n_steps):
+                                    s_step = source_data_step[i]
+                                    t_step = test_data_step[i]
+                                    if spatial_mask is not None:
+                                        s_step = s_step[spatial_mask]
+                                        t_step = t_step[spatial_mask]
+                                    
+                                    ct = ContingencyTable.from_data(s_step, t_step, threshold)
+                                    if metric == 'pod':
+                                        result[i] = ct.pod()
+                                    elif metric == 'far':
+                                        result[i] = ct.far()
+                                    elif metric == 'csi':
+                                        result[i] = ct.csi()
+                                    elif metric == 'gss':
+                                        result[i] = ct.gss()
+                                    elif metric == 'fbias':
+                                        result[i] = ct.bias()
+                            else:
+                                raise ValueError(f"Unsupported metric for domain-aggregated: {metric}")
 
                             metric_idx = metric_indices[metric]
                             out_datasets[var][out_time_start:out_time_stop, metric_idx] = result
