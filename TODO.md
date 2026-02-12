@@ -22,16 +22,16 @@ Binary "Yes/No" verification based on a threshold (e.g., Precip > 1.0mm).
 - [x] **Gilbert Skill Score (GSS)** - Equitable Threat Score (accounts for chance hits).
 - [x] **Frequency Bias (FBIAS)** - Ratio of forecast events to actual events.
 
+### Architecture
+- [x] **Class-Based API:** Implemented `WRFEvaluator` to centralize setup and reduce code duplication by ~70%.
+- [x] **Threshold Parameter:** Integrated `threshold` argument into high-level evaluators.
+- [x] **Metadata Mapping:** Ensured correct NetCDF4 attributes for all new metrics.
+
 ---
 
 ## 🚀 High Priority (Short Term)
 
-### 1. High-Level API Integration
-- [ ] **Threshold Parameter:** Update `evaluate_models_cell` and `evaluate_models_domain` to accept a `threshold` argument.
-- [ ] **Categorical Branching:** Update orchestrators in `evaluate.py` to handle `ContingencyTable` metrics when a threshold is provided.
-- [ ] **Metadata Mapping:** Complete `_get_metric_info` in `metrics.py` for all categorical metrics to ensure NetCDF4 outputs have correct units/names.
-
-### 2. Basic Spatial Verification
+### 1. Spatial Verification
 - [ ] **Fractions Skill Score (FSS):** Implement FSS to evaluate high-resolution rainfall forecasts without the "double penalty" of small spatial displacements.
 
 ---

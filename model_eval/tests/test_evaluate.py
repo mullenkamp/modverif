@@ -9,6 +9,8 @@ import numpy as np
 import pytest
 
 from model_eval.metrics import (
+    AVAILABLE_DOMAIN_METRICS,
+    AVAILABLE_METRICS,
     compute_ane,
     compute_ane_domain,
     compute_ne,
@@ -17,8 +19,6 @@ from model_eval.metrics import (
     compute_rse,
 )
 from model_eval.evaluate import (
-    AVAILABLE_DOMAIN_METRICS,
-    AVAILABLE_METRICS,
     _find_latlon_bounds,
     evaluate_cyclones,
     evaluate_models_cell,
