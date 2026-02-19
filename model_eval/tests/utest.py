@@ -18,7 +18,7 @@ if module_path not in sys.path:
     sys.path.append(module_path)
 
 import model_eval
-from model_eval.evaluator import WRFEvaluator
+from model_eval.evaluator import Evaluator
 
 ##################################################
 #### Parameters
@@ -66,7 +66,7 @@ plot_path = export_path.joinpath('plots')
 # results_path = evaluate_models_domain(source_path, test_path, output_path, domain, variables, region=region)
 
 
-self = WRFEvaluator(source_dir, test_dir, domain)
+self = Evaluator(source_cfdb_path, test_cfdb_path)
 
 res = self.evaluate_domain(output_path, variables, 'ne')
 

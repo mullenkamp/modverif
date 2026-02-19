@@ -1,18 +1,19 @@
 """
-Functions for tracking cyclones in WRF model output using sea level pressure.
+Functions for tracking cyclones in model output using sea level pressure.
+
+Reads data from cfdb datasets. If the dataset contains pre-computed ``mslp``,
+it is used directly. Otherwise, SLP is estimated from ``surface_pressure``,
+``terrain_height``, and ``air_temperature`` (with optional ``mixing_ratio``
+for virtual temperature correction).
 """
 import pathlib
 from dataclasses import dataclass
 from typing import Union
 
-import h5py
+import cfdb
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.patches import Circle
 from scipy.ndimage import gaussian_filter
-
-from model_eval.wrfio import WRFFile
-# from wrfio import WRFFile
 
 try:
     import cartopy.crs as ccrs
@@ -35,10 +36,7 @@ def _compute_sea_level_pressure(
     q2: np.ndarray = None,
 ) -> np.ndarray:
     """
-    Estimate sea level pressure from WRF surface variables.
-
-    Uses the hypsometric equation with virtual temperature correction
-    when moisture data is available.
+    Estimate sea level pressure from surface variables using the hypsometric equation.
 
     Parameters
     ----------
@@ -56,13 +54,122 @@ def _compute_sea_level_pressure(
     -------
     np.ndarray
         Estimated sea level pressure in Pa.
-
-    Notes
-    -----
-    This function is kept for backwards compatibility and internal use.
-    Prefer using WRFFile.get_slp() for reading from WRF files directly.
     """
-    return WRFFile._compute_slp(psfc, hgt, t2, q2)
+    if q2 is not None:
+        t_virtual = t2 * (1.0 + 0.61 * q2)
+    else:
+        t_virtual = t2
+
+    t_sea_level = t_virtual + STANDARD_LAPSE_RATE * hgt
+    t_avg = 0.5 * (t_virtual + t_sea_level)
+    slp = psfc * np.exp(GRAVITY * hgt / (GAS_CONSTANT_DRY * t_avg))
+
+    return slp
+
+
+def _read_var_2d(ds, var_name, time_idx, height_idx=0):
+    """
+    Read a 2D (y, x) slice from a cfdb dataset variable.
+
+    Handles 3D (time, y, x) and 4D (time, height, y, x) variables,
+    squeezing scalar dimensions that cfdb preserves on integer indexing.
+    """
+    var = ds[var_name]
+    n_dims = len(var.shape)
+    if n_dims == 4:
+        data = var[(time_idx, height_idx, slice(None), slice(None))].data
+        return data[0, 0]
+    elif n_dims == 3:
+        data = var[(time_idx, slice(None), slice(None))].data
+        return data[0]
+    elif n_dims == 2:
+        data = var[(slice(None), slice(None))].data
+        return data
+    else:
+        raise ValueError(f"Variable '{var_name}' has {n_dims} dimensions, expected 2-4")
+
+
+def _read_latlon_2d(ds):
+    """
+    Read 2D latitude and longitude arrays from a cfdb dataset.
+
+    Handles two cases:
+    - 1D coordinates (``latitude``/``longitude``): creates 2D meshgrid
+    - 2D data variables (``latitude``/``longitude``): reads directly
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        (xlat, xlong) each with shape (n_y, n_x).
+    """
+    coord_names = set(ds.coord_names)
+    var_names = set(ds.data_var_names)
+
+    if 'latitude' in coord_names and 'longitude' in coord_names:
+        lat_1d = ds['latitude'].data
+        lon_1d = ds['longitude'].data
+        xlong, xlat = np.meshgrid(lon_1d, lat_1d)
+        return xlat, xlong
+    elif 'latitude' in var_names and 'longitude' in var_names:
+        lat_var = ds['latitude']
+        lon_var = ds['longitude']
+        n_dims = len(lat_var.shape)
+        if n_dims == 2:
+            xlat = lat_var[(slice(None), slice(None))].data
+            xlong = lon_var[(slice(None), slice(None))].data
+        elif n_dims == 3:
+            # (time, y, x) — take first timestep
+            xlat = lat_var[(0, slice(None), slice(None))].data[0]
+            xlong = lon_var[(0, slice(None), slice(None))].data[0]
+        elif n_dims == 4:
+            # (time, height, y, x) — take first timestep and height
+            xlat = lat_var[(0, 0, slice(None), slice(None))].data[0, 0]
+            xlong = lon_var[(0, 0, slice(None), slice(None))].data[0, 0]
+        else:
+            raise ValueError(f"latitude variable has {n_dims} dimensions, expected 2-4")
+        return xlat, xlong
+    else:
+        raise ValueError(
+            "Dataset must contain 'latitude' and 'longitude' as either "
+            f"coordinates or data variables. Found coords={ds.coord_names}, "
+            f"data_vars={ds.data_var_names}"
+        )
+
+
+def _read_slp_from_cfdb(ds, time_idx, smoothing_sigma=None):
+    """
+    Read or compute sea level pressure from a cfdb dataset for one timestep.
+
+    Uses ``mslp`` if available. Otherwise computes from ``surface_pressure``,
+    ``terrain_height``, and ``air_temperature`` (with optional ``mixing_ratio``).
+
+    Returns
+    -------
+    np.ndarray
+        2D SLP field (y, x) in Pa.
+    """
+    all_vars = set(ds.coord_names) | set(ds.data_var_names)
+
+    if 'mslp' in all_vars:
+        slp = _read_var_2d(ds, 'mslp', time_idx)
+    else:
+        required = {'surface_pressure', 'terrain_height', 'air_temperature'}
+        missing = required - all_vars
+        if missing:
+            raise ValueError(
+                f"Dataset does not contain 'mslp' and is missing variables "
+                f"needed to compute SLP: {missing}"
+            )
+        psfc = _read_var_2d(ds, 'surface_pressure', time_idx)
+        hgt = _read_var_2d(ds, 'terrain_height', time_idx)
+        t2 = _read_var_2d(ds, 'air_temperature', time_idx)
+        q2 = _read_var_2d(ds, 'mixing_ratio', time_idx) if 'mixing_ratio' in all_vars else None
+        slp = _compute_sea_level_pressure(psfc, hgt, t2, q2)
+
+    if smoothing_sigma is not None:
+        slp = gaussian_filter(slp.astype(np.float64), sigma=smoothing_sigma).astype(slp.dtype)
+
+    return slp
 
 
 @dataclass
@@ -266,7 +373,7 @@ def _estimate_cyclone_radius(
 
 
 def track_cyclone(
-    wrfout_path: Union[str, pathlib.Path],
+    cfdb_path: Union[str, pathlib.Path],
     start_lat: float = None,
     start_lon: float = None,
     search_radius_km: float = 500.0,
@@ -277,9 +384,10 @@ def track_cyclone(
     """
     Track a cyclone through time using sea level pressure minima.
 
-    Sea level pressure is estimated from WRF surface variables (PSFC, HGT, T2)
-    using the hypsometric equation. If Q2 (2-meter mixing ratio) is available,
-    a virtual temperature correction is applied.
+    If the dataset contains ``mslp``, it is used directly. Otherwise,
+    SLP is estimated from ``surface_pressure``, ``terrain_height``, and
+    ``air_temperature`` using the hypsometric equation. If ``mixing_ratio``
+    is available, a virtual temperature correction is applied.
 
     Starting from an initial position (or the global minimum if not specified),
     tracks the cyclone by finding the SLP minimum within a search radius
@@ -287,8 +395,8 @@ def track_cyclone(
 
     Parameters
     ----------
-    wrfout_path : str or pathlib.Path
-        Path to WRF output file (netCDF4/HDF5 format).
+    cfdb_path : str or pathlib.Path
+        Path to cfdb dataset.
     start_lat : float, optional
         Initial search latitude. If None, uses global pressure minimum at t=0.
     start_lon : float, optional
@@ -314,27 +422,14 @@ def track_cyclone(
     Raises
     ------
     FileNotFoundError
-        If the WRF file does not exist.
+        If the cfdb dataset does not exist.
     ValueError
-        If required variables (PSFC, HGT, T2, XLAT, XLONG) are not found.
-
-    Notes
-    -----
-    Required WRF variables:
-        - PSFC: Surface pressure (Pa)
-        - HGT: Terrain height (m)
-        - T2: 2-meter temperature (K)
-        - XLAT: Latitude grid
-        - XLONG: Longitude grid
-
-    Optional WRF variables:
-        - Q2: 2-meter water vapor mixing ratio (kg/kg) - improves SLP accuracy
+        If required variables are not found.
 
     Examples
     --------
-    >>> # Track cyclone starting near a known location
     >>> positions = track_cyclone(
-    ...     'wrfout_d01_2020-03-15_00:00:00',
+    ...     'model_output.cfdb',
     ...     start_lat=-45.0,
     ...     start_lon=170.0,
     ...     search_radius_km=300.0,
@@ -343,28 +438,23 @@ def track_cyclone(
     ...     print(f"t={pos.time_index}: ({pos.latitude:.2f}, {pos.longitude:.2f}) "
     ...           f"SLP={pos.central_pressure/100:.1f} hPa, R={pos.radius_km:.0f} km")
     """
+    cfdb_path = pathlib.Path(cfdb_path)
+    if not cfdb_path.exists():
+        raise FileNotFoundError(f"Dataset not found: {cfdb_path}")
+
     positions = []
 
-    with WRFFile(wrfout_path) as wrf:
-        # Validate required variables exist
-        required_vars = ['PSFC', 'HGT', 'T2', 'XLAT', 'XLONG']
-        for var in required_vars:
-            if not wrf.has_variable(var):
-                raise ValueError(f"Required variable '{var}' not found in {wrfout_path}")
-
-        xlat = wrf.xlat
-        xlong = wrf.xlong
-        hgt = wrf.hgt
-        time_strings = wrf.times
-        n_times = wrf.n_times
+    with cfdb.open_dataset(cfdb_path) as ds:
+        xlat, xlong = _read_latlon_2d(ds)
+        time_values = ds['time'].data
+        n_times = len(time_values)
 
         # Initialize search position
         current_lat = start_lat
         current_lon = start_lon
 
         for t in range(n_times):
-            # Compute sea level pressure using WRFFile method
-            slp = wrf.get_slp(t, smoothing_sigma=smoothing_sigma)
+            slp = _read_slp_from_cfdb(ds, t, smoothing_sigma=smoothing_sigma)
 
             # Find pressure minimum
             if t == 0 and current_lat is None:
@@ -396,6 +486,9 @@ def track_cyclone(
                 max_radius_km=max_cyclone_radius_km,
             )
 
+            # Format time string
+            time_str = str(time_values[t]) if time_values is not None else None
+
             # Create position record
             pos = CyclonePosition(
                 time_index=t,
@@ -405,7 +498,7 @@ def track_cyclone(
                 longitude=center_lon,
                 central_pressure=min_pressure,
                 radius_km=radius,
-                time_str=time_strings[t] if time_strings else None,
+                time_str=time_str,
             )
             positions.append(pos)
 
@@ -417,7 +510,7 @@ def track_cyclone(
 
 
 def track_cyclone_multi_file(
-    wrfout_paths: list[Union[str, pathlib.Path]],
+    cfdb_paths: list[Union[str, pathlib.Path]],
     start_lat: float = None,
     start_lon: float = None,
     search_radius_km: float = 500.0,
@@ -426,7 +519,7 @@ def track_cyclone_multi_file(
     smoothing_sigma: float = None,
 ) -> list[CyclonePosition]:
     """
-    Track a cyclone across multiple WRF output files.
+    Track a cyclone across multiple cfdb datasets.
 
     Files are processed in the order provided. The cyclone position from the
     last timestep of each file is used as the starting search position for
@@ -434,8 +527,8 @@ def track_cyclone_multi_file(
 
     Parameters
     ----------
-    wrfout_paths : list of str or pathlib.Path
-        List of paths to WRF output files, in chronological order.
+    cfdb_paths : list of str or pathlib.Path
+        List of paths to cfdb datasets, in chronological order.
     start_lat : float, optional
         Initial search latitude for first file.
     start_lon : float, optional
@@ -459,7 +552,7 @@ def track_cyclone_multi_file(
     current_lat = start_lat
     current_lon = start_lon
 
-    for path in wrfout_paths:
+    for path in cfdb_paths:
         positions = track_cyclone(
             path,
             start_lat=current_lat,
@@ -552,7 +645,7 @@ def _radius_km_to_degrees(radius_km: float, latitude: float) -> tuple[float, flo
 
 
 def plot_cyclone_timestep(
-    wrfout_path: Union[str, pathlib.Path],
+    cfdb_path: Union[str, pathlib.Path],
     position: CyclonePosition,
     output_path: Union[str, pathlib.Path],
     slp_levels: list[float] = None,
@@ -566,8 +659,8 @@ def plot_cyclone_timestep(
 
     Parameters
     ----------
-    wrfout_path : str or pathlib.Path
-        Path to WRF output file.
+    cfdb_path : str or pathlib.Path
+        Path to cfdb dataset.
     position : CyclonePosition
         Cyclone position for this timestep.
     output_path : str or pathlib.Path
@@ -588,17 +681,14 @@ def plot_cyclone_timestep(
     if slp_levels is None:
         slp_levels = list(range(960, 1044, 4))
 
-    with WRFFile(wrfout_path) as wrf:
-        # Read data for this timestep
+    with cfdb.open_dataset(cfdb_path) as ds:
         t = position.time_index
-        xlat = wrf.xlat
-        xlong = wrf.xlong
+        xlat, xlong = _read_latlon_2d(ds)
 
         # Wrap longitudes to -180 to 180 range
         xlong = np.where(xlong < 0, xlong + 360, xlong)
 
-        # Compute SLP using WRFFile method
-        slp = wrf.get_slp(t)
+        slp = _read_slp_from_cfdb(ds, t)
         slp_hpa = slp / 100.0  # Convert to hPa
 
     # Create figure with cartopy projection if available
@@ -678,10 +768,7 @@ def plot_cyclone_timestep(
 
     # Plot cyclone radius as a circle
     radius_lat, radius_lon = _radius_km_to_degrees(position.radius_km, position.latitude)
-    # Use average for circle (approximate)
-    avg_radius_deg = (radius_lat + radius_lon) / 2
 
-    # Plot cyclone radius as a circle
     if HAS_CARTOPY:
         # Use theta array to draw circle in lat/lon coordinates
         theta = np.linspace(0, 2 * np.pi, 100)
@@ -694,6 +781,7 @@ def plot_cyclone_timestep(
             transform=ccrs.PlateCarree(),
         )
     else:
+        avg_radius_deg = (radius_lat + radius_lon) / 2
         circle = plt.Circle(
             (center_lon, position.latitude),
             avg_radius_deg,
@@ -723,7 +811,7 @@ def plot_cyclone_timestep(
         time_str = position.time_str if position.time_str else f't={position.time_index}'
         title = (
             f'Cyclone Track - {time_str}\n'
-            f'Center: ({position.latitude:.2f}°, {position.longitude:.2f}°) | '
+            f'Center: ({position.latitude:.2f}\u00b0, {position.longitude:.2f}\u00b0) | '
             f'SLP: {position.central_pressure/100:.1f} hPa | '
             f'Radius: {position.radius_km:.0f} km'
         )
@@ -747,7 +835,7 @@ def plot_cyclone_timestep(
 
 
 def plot_cyclone_track(
-    wrfout_path: Union[str, pathlib.Path],
+    cfdb_path: Union[str, pathlib.Path],
     positions: list[CyclonePosition],
     output_dir: Union[str, pathlib.Path],
     filename_prefix: str = 'cyclone',
@@ -763,8 +851,8 @@ def plot_cyclone_track(
 
     Parameters
     ----------
-    wrfout_path : str or pathlib.Path
-        Path to WRF output file.
+    cfdb_path : str or pathlib.Path
+        Path to cfdb dataset.
     positions : list[CyclonePosition]
         List of cyclone positions from track_cyclone().
     output_dir : str or pathlib.Path
@@ -788,8 +876,8 @@ def plot_cyclone_track(
 
     Examples
     --------
-    >>> positions = track_cyclone('wrfout_d01_2020-03-15_00:00:00', start_lat=-45.0, start_lon=170.0)
-    >>> png_files = plot_cyclone_track('wrfout_d01_2020-03-15_00:00:00', positions, './cyclone_plots/')
+    >>> positions = track_cyclone('model_output.cfdb', start_lat=-45.0, start_lon=170.0)
+    >>> png_files = plot_cyclone_track('model_output.cfdb', positions, './cyclone_plots/')
     """
     output_dir = pathlib.Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -797,25 +885,25 @@ def plot_cyclone_track(
     output_files = []
 
     for pos in positions:
-        output_path = output_dir / f'{filename_prefix}_t{pos.time_index:03d}.png'
+        out_path = output_dir / f'{filename_prefix}_t{pos.time_index:03d}.png'
 
         plot_cyclone_timestep(
-            wrfout_path=wrfout_path,
+            cfdb_path=cfdb_path,
             position=pos,
-            output_path=output_path,
+            output_path=out_path,
             slp_levels=slp_levels,
             figsize=figsize,
             dpi=dpi,
             cmap=cmap,
         )
 
-        output_files.append(output_path)
+        output_files.append(out_path)
 
     return output_files
 
 
 def plot_cyclone_track_multi_file(
-    wrfout_paths: list[Union[str, pathlib.Path]],
+    cfdb_paths: list[Union[str, pathlib.Path]],
     positions: list[CyclonePosition],
     output_dir: Union[str, pathlib.Path],
     filename_prefix: str = 'cyclone',
@@ -825,12 +913,12 @@ def plot_cyclone_track_multi_file(
     cmap: str = 'RdYlBu_r',
 ):
     """
-    Plot cyclone track across multiple WRF files.
+    Plot cyclone track across multiple cfdb datasets.
 
     Parameters
     ----------
-    wrfout_paths : list of str or pathlib.Path
-        List of WRF output file paths in chronological order.
+    cfdb_paths : list of str or pathlib.Path
+        List of cfdb dataset paths in chronological order.
     positions : list[CyclonePosition]
         List of cyclone positions from track_cyclone_multi_file().
     output_dir : str or pathlib.Path
@@ -855,14 +943,13 @@ def plot_cyclone_track_multi_file(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Build mapping of time indices to files
-    # Each file contributes a range of time indices
     file_time_ranges = []
     time_offset = 0
 
-    for path in wrfout_paths:
+    for path in cfdb_paths:
         path = pathlib.Path(path)
-        with WRFFile(path) as wrf:
-            n_times = wrf.n_times
+        with cfdb.open_dataset(path) as ds:
+            n_times = len(ds['time'].data)
         file_time_ranges.append((time_offset, time_offset + n_times, path))
         time_offset += n_times
 
@@ -870,16 +957,16 @@ def plot_cyclone_track_multi_file(
 
     for pos in positions:
         # Find which file contains this timestep
-        wrfout_path = None
+        cfdb_path = None
         local_time_index = pos.time_index
 
         for start_t, end_t, path in file_time_ranges:
             if start_t <= pos.time_index < end_t:
-                wrfout_path = path
+                cfdb_path = path
                 local_time_index = pos.time_index - start_t
                 break
 
-        if wrfout_path is None:
+        if cfdb_path is None:
             raise ValueError(f"Could not find file for time index {pos.time_index}")
 
         # Create a temporary position with local time index for plotting
@@ -894,18 +981,18 @@ def plot_cyclone_track_multi_file(
             time_str=pos.time_str,
         )
 
-        output_path = output_dir / f'{filename_prefix}_t{pos.time_index:03d}.png'
+        out_path = output_dir / f'{filename_prefix}_t{pos.time_index:03d}.png'
 
         plot_cyclone_timestep(
-            wrfout_path=wrfout_path,
+            cfdb_path=cfdb_path,
             position=local_pos,
-            output_path=output_path,
+            output_path=out_path,
             slp_levels=slp_levels,
             figsize=figsize,
             dpi=dpi,
             cmap=cmap,
         )
 
-        output_files.append(output_path)
+        output_files.append(out_path)
 
     return output_files

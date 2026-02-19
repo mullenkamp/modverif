@@ -2,63 +2,42 @@
 Pytest configuration and fixtures for model_eval tests.
 """
 import pathlib
-from datetime import date
 
+import numpy as np
 import pytest
 
 
 def pytest_addoption(parser):
     """Add custom command-line options for test configuration."""
-    # Folder-based options (for evaluate_models_cell, evaluate_models_domain)
     parser.addoption(
-        "--source-folder",
+        "--source-dataset",
         action="store",
         default=None,
-        help="Path to source WRF model output folder for integration tests",
+        help="Path to source cfdb dataset for integration tests",
     )
     parser.addoption(
-        "--test-folder",
+        "--test-dataset",
         action="store",
         default=None,
-        help="Path to test WRF model output folder for integration tests",
-    )
-    parser.addoption(
-        "--domain",
-        action="store",
-        default="4",
-        help="WRF domain number to use for integration tests (default: 4)",
+        help="Path to test cfdb dataset for integration tests",
     )
     parser.addoption(
         "--variables",
         action="store",
-        default="T2,Q2",
-        help="Comma-separated list of variables to test (default: T2,Q2)",
+        default="air_temperature,u_wind",
+        help="Comma-separated list of cfdb variable names to test (default: air_temperature,u_wind)",
     )
     parser.addoption(
-        "--start-date",
+        "--start-time",
         action="store",
         default=None,
-        help="Start date for evaluation (ISO format, e.g., 2020-09-30)",
+        help="Start time for evaluation (ISO format, e.g., 2020-09-30)",
     )
     parser.addoption(
-        "--end-date",
+        "--end-time",
         action="store",
         default=None,
-        help="End date for evaluation (ISO format, e.g., 2020-10-15)",
-    )
-
-    # File-based options (for evaluate_cyclones)
-    parser.addoption(
-        "--source-file",
-        action="store",
-        default=None,
-        help="Path to source WRF file for cyclone integration tests",
-    )
-    parser.addoption(
-        "--test-file",
-        action="store",
-        default=None,
-        help="Path to test WRF file for cyclone integration tests",
+        help="End time for evaluation (ISO format, e.g., 2020-10-15)",
     )
     parser.addoption(
         "--cyclone-start-lat",
@@ -76,43 +55,25 @@ def pytest_addoption(parser):
 
 def pytest_configure(config):
     """Register custom markers."""
-    config.addinivalue_line(
-        "markers", "cyclone: mark test as requiring cyclone data"
-    )
+    config.addinivalue_line("markers", "integration: mark test as requiring real data")
 
-
-# Folder-based fixtures
 
 @pytest.fixture
-def source_folder(request):
-    """
-    Fixture providing the source folder path.
-
-    Returns None if not specified (for unit tests using mock data).
-    """
-    path = request.config.getoption("--source-folder")
+def source_dataset(request):
+    """Fixture providing the source cfdb dataset path."""
+    path = request.config.getoption("--source-dataset")
     if path is not None:
         return pathlib.Path(path)
     return None
 
 
 @pytest.fixture
-def test_folder(request):
-    """
-    Fixture providing the test folder path.
-
-    Returns None if not specified (for unit tests using mock data).
-    """
-    path = request.config.getoption("--test-folder")
+def test_dataset(request):
+    """Fixture providing the test cfdb dataset path."""
+    path = request.config.getoption("--test-dataset")
     if path is not None:
         return pathlib.Path(path)
     return None
-
-
-@pytest.fixture
-def domain(request):
-    """Fixture providing the WRF domain number."""
-    return int(request.config.getoption("--domain"))
 
 
 @pytest.fixture
@@ -123,52 +84,20 @@ def variables(request):
 
 
 @pytest.fixture
-def start_date(request):
-    """Fixture providing the start date for evaluation."""
-    date_str = request.config.getoption("--start-date")
-    if date_str is not None:
-        return date.fromisoformat(date_str)
+def start_time(request):
+    """Fixture providing the start time for evaluation."""
+    val = request.config.getoption("--start-time")
+    if val is not None:
+        return np.datetime64(val)
     return None
 
 
 @pytest.fixture
-def end_date(request):
-    """Fixture providing the end date for evaluation."""
-    date_str = request.config.getoption("--end-date")
-    if date_str is not None:
-        return date.fromisoformat(date_str)
-    return None
-
-
-@pytest.fixture
-def real_model_paths(source_folder, test_folder):
-    """
-    Fixture that provides real model paths if configured.
-
-    Skips test if paths are not provided.
-    """
-    if source_folder is None or test_folder is None:
-        pytest.skip("Real model paths not provided. Use --source-folder and --test-folder.")
-    return source_folder, test_folder
-
-
-# File-based fixtures (for cyclone tests)
-
-@pytest.fixture
-def source_file(request):
-    """Fixture providing the source file path for cyclone tests."""
-    path = request.config.getoption("--source-file")
-    if path is not None:
-        return pathlib.Path(path)
-    return None
-
-
-@pytest.fixture
-def test_file(request):
-    """Fixture providing the test file path for cyclone tests."""
-    path = request.config.getoption("--test-file")
-    if path is not None:
-        return pathlib.Path(path)
+def end_time(request):
+    """Fixture providing the end time for evaluation."""
+    val = request.config.getoption("--end-time")
+    if val is not None:
+        return np.datetime64(val)
     return None
 
 
@@ -191,12 +120,8 @@ def cyclone_start_lon(request):
 
 
 @pytest.fixture
-def real_cyclone_files(source_file, test_file):
-    """
-    Fixture that provides real cyclone file paths if configured.
-
-    Skips test if paths are not provided.
-    """
-    if source_file is None or test_file is None:
-        pytest.skip("Real cyclone files not provided. Use --source-file and --test-file.")
-    return source_file, test_file
+def real_datasets(source_dataset, test_dataset):
+    """Fixture that provides real dataset paths. Skips if not provided."""
+    if source_dataset is None or test_dataset is None:
+        pytest.skip("Real dataset paths not provided. Use --source-dataset and --test-dataset.")
+    return source_dataset, test_dataset

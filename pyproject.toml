@@ -11,6 +11,8 @@ classifiers = [
 ]
 requires-python = ">=3.10"
 dependencies = [
+  'cfdb',
+  'pyproj',
   'h5py',
   'rechunkit>=0.2.1',
   'numpy>2',

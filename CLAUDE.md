@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-`model_eval` is a Python package for evaluating model outputs (e.g., comparing WRF weather model runs). It uses UV for environment management, hachling for the build system, and targets Python >= 3.11.
+`model_eval` is a Python package for evaluating model outputs (e.g., comparing WRF weather model runs). It uses UV for environment management, hachling for the build system, and targets Python >= 3.10.
 
 ## Code Style
 
