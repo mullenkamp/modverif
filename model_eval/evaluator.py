@@ -10,15 +10,23 @@ import numpy as np
 from model_eval.metrics import (
     AVAILABLE_DOMAIN_METRICS,
     AVAILABLE_METRICS,
+    AVAILABLE_WIND_METRICS,
     ContingencyTable,
     compute_ane,
     compute_ane_domain,
     compute_bias,
     compute_bias_domain,
+    compute_diurnal_stats,
+    compute_fss_multi_scale,
+    compute_mae,
     compute_ne,
     compute_ne_domain,
+    compute_pearson_domain,
     compute_rmse_domain,
     compute_rse,
+    compute_vector_rmse,
+    compute_wind_direction_bias,
+    compute_wind_speed_bias,
 )
 
 
@@ -445,6 +453,8 @@ class Evaluator:
             return compute_rse(s_chunk, t_chunk)
         if metric == 'bias':
             return compute_bias(s_chunk, t_chunk)
+        if metric == 'mae':
+            return compute_mae(s_chunk, t_chunk)
 
         # Categorical cell-by-cell
         if threshold is None:
@@ -467,6 +477,8 @@ class Evaluator:
             return compute_rmse_domain(s_chunk, t_chunk, self.spatial_mask)
         if metric == 'bias':
             return compute_bias_domain(s_chunk, t_chunk, self.spatial_mask)
+        if metric == 'pearson':
+            return compute_pearson_domain(s_chunk, t_chunk, self.spatial_mask)
 
         # Categorical domain-aggregated
         if threshold is None:
@@ -488,3 +500,296 @@ class Evaluator:
             elif metric == 'fbias':
                 results.append(ct.bias())
         return results
+
+    def evaluate_fss(
+        self,
+        output_path: Union[str, pathlib.Path],
+        variables: List[str],
+        threshold: float,
+        neighborhood_sizes: list = None,
+    ) -> pathlib.Path:
+        """
+        Compute Fractions Skill Score across multiple spatial scales.
+
+        Parameters
+        ----------
+        output_path : str or pathlib.Path
+            Path for output cfdb dataset.
+        variables : list[str]
+            Variable names to evaluate.
+        threshold : float
+            Binary event threshold.
+        neighborhood_sizes : list[int], optional
+            Neighborhood sizes. Default: [1, 3, 5, 9, 17, 33, 65].
+
+        Returns
+        -------
+        pathlib.Path
+            Path to the output cfdb dataset.
+        """
+        output_path = pathlib.Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if isinstance(variables, str):
+            variables = [variables]
+        if neighborhood_sizes is None:
+            neighborhood_sizes = [1, 3, 5, 9, 17, 33, 65]
+
+        height_idx = 0
+
+        with (
+            cfdb.open_dataset(self.source_path) as ds_s,
+            cfdb.open_dataset(self.test_path) as ds_t,
+            cfdb.open_dataset(output_path, 'n', dataset_type='grid') as ds_out,
+        ):
+            time_coord = ds_out.create.coord.time(data=self.time_values)
+            scale_data = np.array(neighborhood_sizes, dtype='int32')
+            scale_coord = ds_out.create.coord.generic('scale', data=scale_data, dtype='int32')
+
+            ds_out.attrs['source_path'] = str(self.source_path)
+            ds_out.attrs['test_path'] = str(self.test_path)
+            ds_out.attrs['evaluation_type'] = 'fss'
+            ds_out.attrs['threshold'] = str(threshold)
+
+            out_vars = {}
+            for var in variables:
+                out_var = ds_out.create.data_var.generic(
+                    var, ('time', 'scale'), dtype='float32',
+                    chunk_shape=(1, len(neighborhood_sizes)),
+                )
+                out_var.attrs['long_name'] = f'FSS for {var}'
+                out_var.attrs['units'] = '1'
+                out_vars[var] = out_var
+
+            for var in variables:
+                if var not in ds_s:
+                    raise ValueError(f"Variable '{var}' not found in source dataset")
+                if var not in ds_t:
+                    raise ValueError(f"Variable '{var}' not found in test dataset")
+
+                s_var = ds_s[var]
+                t_var = ds_t[var]
+                n_dims = len(s_var.shape)
+
+                for out_t, (s_t_idx, t_t_idx) in enumerate(
+                    zip(self._source_time_indices, self._test_time_indices)
+                ):
+                    if n_dims == 4:
+                        s_data = s_var[(int(s_t_idx), height_idx, self.y_slice, self.x_slice)].data[0, 0]
+                        t_data = t_var[(int(t_t_idx), height_idx, self.y_slice, self.x_slice)].data[0, 0]
+                    elif n_dims == 3:
+                        s_data = s_var[(int(s_t_idx), self.y_slice, self.x_slice)].data[0]
+                        t_data = t_var[(int(t_t_idx), self.y_slice, self.x_slice)].data[0]
+                    else:
+                        raise ValueError(f"Variable '{var}' has {n_dims} dimensions, expected 3 or 4")
+
+                    fss_results = compute_fss_multi_scale(
+                        s_data, t_data, threshold, neighborhood_sizes, self.spatial_mask
+                    )
+                    fss_arr = np.array([fss_results[n] for n in neighborhood_sizes], dtype=np.float32)
+                    out_vars[var][(out_t, slice(None))] = fss_arr
+
+        return output_path
+
+    def evaluate_wind(
+        self,
+        output_path: Union[str, pathlib.Path],
+        u_var: str = 'u_wind',
+        v_var: str = 'v_wind',
+        metrics: Union[str, List[str]] = 'vector_rmse',
+    ) -> pathlib.Path:
+        """
+        Compute vector wind metrics from U/V components.
+
+        Parameters
+        ----------
+        output_path : str or pathlib.Path
+            Path for output cfdb dataset.
+        u_var : str
+            Name of U-component variable.
+        v_var : str
+            Name of V-component variable.
+        metrics : str or list[str]
+            Wind metric(s): 'vector_rmse', 'speed_bias', 'direction_bias'.
+
+        Returns
+        -------
+        pathlib.Path
+            Path to the output cfdb dataset.
+        """
+        output_path = pathlib.Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if isinstance(metrics, str):
+            metrics = [metrics]
+        metrics = [m.lower() for m in metrics]
+        for m in metrics:
+            if m not in AVAILABLE_WIND_METRICS:
+                raise ValueError(f"Unknown wind metric '{m}'. Available: {AVAILABLE_WIND_METRICS}")
+
+        height_idx = 0
+
+        with (
+            cfdb.open_dataset(self.source_path) as ds_s,
+            cfdb.open_dataset(self.test_path) as ds_t,
+            cfdb.open_dataset(output_path, 'n', dataset_type='grid') as ds_out,
+        ):
+            time_coord = ds_out.create.coord.time(data=self.time_values)
+            metric_indices = np.arange(len(metrics), dtype='int32')
+            metric_coord = ds_out.create.coord.generic('metric', data=metric_indices, dtype='int32')
+            metric_coord.attrs['flag_meanings'] = ' '.join(metrics)
+
+            ds_out.attrs['source_path'] = str(self.source_path)
+            ds_out.attrs['test_path'] = str(self.test_path)
+            ds_out.attrs['evaluation_type'] = 'wind'
+
+            out_var = ds_out.create.data_var.generic(
+                'wind', ('time', 'metric'), dtype='float32',
+                chunk_shape=(1, len(metrics)),
+            )
+            out_var.attrs['long_name'] = 'Vector wind metrics'
+
+            for v in [u_var, v_var]:
+                if v not in ds_s:
+                    raise ValueError(f"Variable '{v}' not found in source dataset")
+                if v not in ds_t:
+                    raise ValueError(f"Variable '{v}' not found in test dataset")
+
+            su_var, sv_var = ds_s[u_var], ds_s[v_var]
+            tu_var, tv_var = ds_t[u_var], ds_t[v_var]
+            n_dims = len(su_var.shape)
+
+            for out_t, (s_t_idx, t_t_idx) in enumerate(
+                zip(self._source_time_indices, self._test_time_indices)
+            ):
+                if n_dims == 4:
+                    su = su_var[(int(s_t_idx), height_idx, self.y_slice, self.x_slice)].data[0, 0]
+                    sv = sv_var[(int(s_t_idx), height_idx, self.y_slice, self.x_slice)].data[0, 0]
+                    tu = tu_var[(int(t_t_idx), height_idx, self.y_slice, self.x_slice)].data[0, 0]
+                    tv = tv_var[(int(t_t_idx), height_idx, self.y_slice, self.x_slice)].data[0, 0]
+                elif n_dims == 3:
+                    su = su_var[(int(s_t_idx), self.y_slice, self.x_slice)].data[0]
+                    sv = sv_var[(int(s_t_idx), self.y_slice, self.x_slice)].data[0]
+                    tu = tu_var[(int(t_t_idx), self.y_slice, self.x_slice)].data[0]
+                    tv = tv_var[(int(t_t_idx), self.y_slice, self.x_slice)].data[0]
+                else:
+                    raise ValueError(f"Variable '{u_var}' has {n_dims} dimensions, expected 3 or 4")
+
+                if self.use_mask:
+                    su, sv = su[self.spatial_mask], sv[self.spatial_mask]
+                    tu, tv = tu[self.spatial_mask], tv[self.spatial_mask]
+
+                results = np.zeros(len(metrics), dtype=np.float32)
+                for m_idx, metric in enumerate(metrics):
+                    if metric == 'vector_rmse':
+                        results[m_idx] = compute_vector_rmse(su, sv, tu, tv)
+                    elif metric == 'speed_bias':
+                        results[m_idx] = compute_wind_speed_bias(su, sv, tu, tv)
+                    elif metric == 'direction_bias':
+                        results[m_idx] = compute_wind_direction_bias(su, sv, tu, tv)
+                out_var[(out_t, slice(None))] = results
+
+        return output_path
+
+    def evaluate_diurnal(
+        self,
+        output_path: Union[str, pathlib.Path],
+        variables: List[str],
+        metrics: Union[str, List[str]] = 'bias',
+    ) -> pathlib.Path:
+        """
+        Compute diurnal cycle of domain-aggregated metrics.
+
+        Parameters
+        ----------
+        output_path : str or pathlib.Path
+            Path for output cfdb dataset.
+        variables : list[str]
+            Variable names to evaluate.
+        metrics : str or list[str]
+            Metric(s) to group by hour: 'bias', 'rmse', 'mae', 'pearson'.
+
+        Returns
+        -------
+        pathlib.Path
+            Path to the output cfdb dataset.
+        """
+        output_path = pathlib.Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if isinstance(variables, str):
+            variables = [variables]
+        if isinstance(metrics, str):
+            metrics = [metrics]
+
+        height_idx = 0
+
+        with (
+            cfdb.open_dataset(self.source_path) as ds_s,
+            cfdb.open_dataset(self.test_path) as ds_t,
+        ):
+            # Collect all data for diurnal binning
+            var_source_data = {}
+            var_test_data = {}
+
+            for var in variables:
+                if var not in ds_s:
+                    raise ValueError(f"Variable '{var}' not found in source dataset")
+                if var not in ds_t:
+                    raise ValueError(f"Variable '{var}' not found in test dataset")
+
+                s_var = ds_s[var]
+                t_var = ds_t[var]
+                n_dims = len(s_var.shape)
+
+                s_means = np.zeros(self.n_times, dtype=np.float64)
+                t_means = np.zeros(self.n_times, dtype=np.float64)
+
+                for out_t, (s_t_idx, t_t_idx) in enumerate(
+                    zip(self._source_time_indices, self._test_time_indices)
+                ):
+                    if n_dims == 4:
+                        s_data = s_var[(int(s_t_idx), height_idx, self.y_slice, self.x_slice)].data[0, 0]
+                        t_data = t_var[(int(t_t_idx), height_idx, self.y_slice, self.x_slice)].data[0, 0]
+                    elif n_dims == 3:
+                        s_data = s_var[(int(s_t_idx), self.y_slice, self.x_slice)].data[0]
+                        t_data = t_var[(int(t_t_idx), self.y_slice, self.x_slice)].data[0]
+                    else:
+                        raise ValueError(f"Variable '{var}' has {n_dims} dimensions, expected 3 or 4")
+
+                    if self.use_mask:
+                        s_data = s_data[self.spatial_mask]
+                        t_data = t_data[self.spatial_mask]
+                    s_means[out_t] = np.mean(s_data)
+                    t_means[out_t] = np.mean(t_data)
+
+                var_source_data[var] = s_means
+                var_test_data[var] = t_means
+
+        # Write output
+        with cfdb.open_dataset(output_path, 'n', dataset_type='grid') as ds_out:
+            hour_data = np.arange(24, dtype='int32')
+            hour_coord = ds_out.create.coord.generic('hour', data=hour_data, dtype='int32')
+            metric_indices = np.arange(len(metrics), dtype='int32')
+            metric_coord = ds_out.create.coord.generic('metric', data=metric_indices, dtype='int32')
+            metric_coord.attrs['flag_meanings'] = ' '.join(metrics)
+
+            ds_out.attrs['source_path'] = str(self.source_path)
+            ds_out.attrs['test_path'] = str(self.test_path)
+            ds_out.attrs['evaluation_type'] = 'diurnal'
+
+            for var in variables:
+                out_var = ds_out.create.data_var.generic(
+                    var, ('hour', 'metric'), dtype='float64',
+                    chunk_shape=(24, len(metrics)),
+                )
+                out_var.attrs['long_name'] = f'Diurnal cycle metrics for {var}'
+
+                for m_idx, metric in enumerate(metrics):
+                    _, values = compute_diurnal_stats(
+                        self.time_values, var_test_data[var], var_source_data[var], metric
+                    )
+                    for h in range(24):
+                        out_var[(h, m_idx)] = np.array([values[h]], dtype=np.float64)
+
+        return output_path

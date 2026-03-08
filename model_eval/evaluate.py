@@ -8,6 +8,7 @@ import cfdb
 import numpy as np
 
 from model_eval.evaluator import Evaluator
+from model_eval.station import StationEvaluator
 from model_eval.cyclone import (
     CyclonePosition,
     _estimate_cyclone_radius,
@@ -341,3 +342,199 @@ def evaluate_cyclones(
                 v[(t, slice(None))] = var_results[var][t]
 
     return output_path
+
+
+def evaluate_stations(
+    model: Union[str, pathlib.Path],
+    observations: Union[str, pathlib.Path],
+    output_path: Union[str, pathlib.Path],
+    variables: List[str],
+    metrics: Union[str, List[str]] = 'bias',
+    start_time: Union[str, np.datetime64, None] = None,
+    end_time: Union[str, np.datetime64, None] = None,
+    interpolation_order: int = 1,
+    height: float = None,
+    variable_heights: dict = None,
+) -> pathlib.Path:
+    """
+    Evaluate model output against station observations.
+
+    Convenience wrapper around :class:`~model_eval.station.StationEvaluator`.
+
+    Parameters
+    ----------
+    model : str or pathlib.Path
+        Path to cfdb grid dataset (model output).
+    observations : str or pathlib.Path
+        Path to cfdb ts_ortho dataset (station observations).
+    output_path : str or pathlib.Path
+        Path for the output cfdb dataset.
+    variables : list[str]
+        Variable names to evaluate.
+    metrics : str or list[str]
+        Metric(s) to compute. Default is ``'bias'``.
+    start_time : str or np.datetime64, optional
+        Start of evaluation period (inclusive).
+    end_time : str or np.datetime64, optional
+        End of evaluation period (inclusive).
+    interpolation_order : int
+        Spatial interpolation order (0=nearest, 1=linear, 3=cubic).
+    height : float, optional
+        Default target model height level in meters.
+    variable_heights : dict, optional
+        Per-variable target heights.
+
+    Returns
+    -------
+    pathlib.Path
+        Path to the output cfdb dataset.
+    """
+    evaluator = StationEvaluator(
+        model, observations, start_time, end_time,
+        interpolation_order, height, variable_heights,
+    )
+    return evaluator.evaluate(output_path, variables, metrics)
+
+
+def evaluate_stations_aggregate(
+    model: Union[str, pathlib.Path],
+    observations: Union[str, pathlib.Path],
+    output_path: Union[str, pathlib.Path],
+    variables: List[str],
+    metrics: Union[str, List[str]] = 'bias',
+    start_time: Union[str, np.datetime64, None] = None,
+    end_time: Union[str, np.datetime64, None] = None,
+    interpolation_order: int = 1,
+    height: float = None,
+    variable_heights: dict = None,
+) -> pathlib.Path:
+    """
+    Evaluate model vs station observations with aggregation over stations.
+
+    Convenience wrapper around :class:`~model_eval.station.StationEvaluator`.
+
+    Parameters
+    ----------
+    model : str or pathlib.Path
+        Path to cfdb grid dataset (model output).
+    observations : str or pathlib.Path
+        Path to cfdb ts_ortho dataset (station observations).
+    output_path : str or pathlib.Path
+        Path for the output cfdb dataset.
+    variables : list[str]
+        Variable names to evaluate.
+    metrics : str or list[str]
+        Metric(s) to compute. Default is ``'bias'``.
+    start_time : str or np.datetime64, optional
+        Start of evaluation period (inclusive).
+    end_time : str or np.datetime64, optional
+        End of evaluation period (inclusive).
+    interpolation_order : int
+        Spatial interpolation order (0=nearest, 1=linear, 3=cubic).
+    height : float, optional
+        Default target model height level in meters.
+    variable_heights : dict, optional
+        Per-variable target heights.
+
+    Returns
+    -------
+    pathlib.Path
+        Path to the output cfdb dataset.
+    """
+    evaluator = StationEvaluator(
+        model, observations, start_time, end_time,
+        interpolation_order, height, variable_heights,
+    )
+    return evaluator.evaluate_aggregate(output_path, variables, metrics)
+
+
+def evaluate_fss(
+    source: Union[str, pathlib.Path],
+    test: Union[str, pathlib.Path],
+    output_path: Union[str, pathlib.Path],
+    variables: List[str],
+    threshold: float,
+    neighborhood_sizes: list = None,
+    region: Union[Tuple[float, float, float, float], np.ndarray, None] = None,
+    start_time: Union[str, np.datetime64, None] = None,
+    end_time: Union[str, np.datetime64, None] = None,
+) -> pathlib.Path:
+    """
+    Compute Fractions Skill Score across multiple spatial scales.
+
+    Convenience wrapper around :meth:`~model_eval.evaluator.Evaluator.evaluate_fss`.
+
+    Parameters
+    ----------
+    source : str or pathlib.Path
+        Path to source/reference cfdb dataset.
+    test : str or pathlib.Path
+        Path to test cfdb dataset.
+    output_path : str or pathlib.Path
+        Path for the output cfdb dataset.
+    variables : list[str]
+        Variable names to evaluate.
+    threshold : float
+        Binary event threshold.
+    neighborhood_sizes : list[int], optional
+        Neighborhood sizes. Default: [1, 3, 5, 9, 17, 33, 65].
+    region : tuple or np.ndarray, optional
+        Bounding box or 2D boolean mask.
+    start_time : str or np.datetime64, optional
+        Start of evaluation period (inclusive).
+    end_time : str or np.datetime64, optional
+        End of evaluation period (inclusive).
+
+    Returns
+    -------
+    pathlib.Path
+        Path to the output cfdb dataset.
+    """
+    evaluator = Evaluator(source, test, region, start_time, end_time)
+    return evaluator.evaluate_fss(output_path, variables, threshold, neighborhood_sizes)
+
+
+def evaluate_wind(
+    source: Union[str, pathlib.Path],
+    test: Union[str, pathlib.Path],
+    output_path: Union[str, pathlib.Path],
+    u_var: str = 'u_wind',
+    v_var: str = 'v_wind',
+    metrics: Union[str, List[str]] = 'vector_rmse',
+    region: Union[Tuple[float, float, float, float], np.ndarray, None] = None,
+    start_time: Union[str, np.datetime64, None] = None,
+    end_time: Union[str, np.datetime64, None] = None,
+) -> pathlib.Path:
+    """
+    Compute vector wind metrics from U/V components.
+
+    Convenience wrapper around :meth:`~model_eval.evaluator.Evaluator.evaluate_wind`.
+
+    Parameters
+    ----------
+    source : str or pathlib.Path
+        Path to source/reference cfdb dataset.
+    test : str or pathlib.Path
+        Path to test cfdb dataset.
+    output_path : str or pathlib.Path
+        Path for the output cfdb dataset.
+    u_var : str
+        Name of U-component variable. Default: ``'u_wind'``.
+    v_var : str
+        Name of V-component variable. Default: ``'v_wind'``.
+    metrics : str or list[str]
+        Wind metric(s). Default: ``'vector_rmse'``.
+    region : tuple or np.ndarray, optional
+        Bounding box or 2D boolean mask.
+    start_time : str or np.datetime64, optional
+        Start of evaluation period (inclusive).
+    end_time : str or np.datetime64, optional
+        End of evaluation period (inclusive).
+
+    Returns
+    -------
+    pathlib.Path
+        Path to the output cfdb dataset.
+    """
+    evaluator = Evaluator(source, test, region, start_time, end_time)
+    return evaluator.evaluate_wind(output_path, u_var, v_var, metrics)
