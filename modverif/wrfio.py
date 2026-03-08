@@ -514,7 +514,7 @@ class NetCDF4Writer:
     Examples
     --------
     >>> with NetCDF4Writer('output.nc') as nc:
-    ...     nc.set_global_attrs(source='model_eval')
+    ...     nc.set_global_attrs(source='modverif')
     ...     time_ds = nc.create_dimension('time', 10)
     ...     var = nc.create_variable('temperature', (10, 50, 50), 'f4')
     ...     nc.attach_scale(var, 0, time_ds)
@@ -578,7 +578,7 @@ class NetCDF4Writer:
         """
         self.h5.attrs['Conventions'] = np.bytes_(conventions)
         if history is None:
-            history = f'Created {datetime.now().isoformat()} by model_eval'
+            history = f'Created {datetime.now().isoformat()} by modverif'
         self.h5.attrs['history'] = np.bytes_(history)
 
         for key, value in kwargs.items():

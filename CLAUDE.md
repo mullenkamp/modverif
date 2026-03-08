@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-`model_eval` is a Python package for evaluating model outputs (e.g., comparing WRF weather model runs). It follows MET/METplus standards for meteorological verification. It uses UV for environment management, hatchling for the build system, and targets Python >= 3.10.
+`modverif` is a Python package for evaluating model outputs (e.g., comparing WRF weather model runs). It follows MET/METplus standards for meteorological verification. It uses UV for environment management, hatchling for the build system, and targets Python >= 3.10.
 
 All inputs/outputs use the [cfdb](https://github.com/mullenkamp/cfdb) format. Station observation data uses the `ts_ortho` dataset type. Grid model data uses the `grid` dataset type.
 
@@ -13,20 +13,20 @@ All inputs/outputs use the [cfdb](https://github.com/mullenkamp/cfdb) format. St
 - **Line length**: 120 characters (both black and ruff)
 - **Formatter**: black with `skip-string-normalization`
 - **Linter**: ruff targeting py311, with relative imports banned (`ban-relative-imports = "all"`)
-- **Imports**: Use absolute imports (e.g., `from model_eval.module import X`, not relative)
+- **Imports**: Use absolute imports (e.g., `from modverif.module import X`, not relative)
 - **Indent**: 4 spaces, UTF-8, LF line endings
 
 ## Architecture
 
-- `model_eval/` — Main package. Version defined in `__init__.py`.
-- `model_eval/metrics.py` — All metric implementations (continuous, categorical, domain-aggregated, FSS, vector wind, diurnal).
-- `model_eval/evaluator.py` — `Evaluator` class for grid-to-grid comparison. Methods: `evaluate_cell`, `evaluate_domain`, `evaluate_fss`, `evaluate_wind`, `evaluate_diurnal`.
-- `model_eval/station.py` — `StationEvaluator` class for grid-to-point (model vs station) comparison. Methods: `evaluate`, `evaluate_aggregate`, `evaluate_wind`, `evaluate_diurnal`.
-- `model_eval/evaluate.py` — Convenience wrapper functions for all evaluator classes.
-- `model_eval/cyclone.py` — Cyclone tracking and cyclone-region evaluation.
-- `model_eval/plots.py` — Verification plots (scatter, station map, timeseries, performance diagram, Taylor diagram, diurnal cycle, FSS, wind rose).
-- `model_eval/wrfio.py` — Legacy WRF I/O using h5py.
-- `model_eval/tests/` — Test directory (pytest). Tests are excluded from sdist builds.
+- `modverif/` — Main package. Version defined in `__init__.py`.
+- `modverif/metrics.py` — All metric implementations (continuous, categorical, domain-aggregated, FSS, vector wind, diurnal).
+- `modverif/evaluator.py` — `Evaluator` class for grid-to-grid comparison. Methods: `evaluate_cell`, `evaluate_domain`, `evaluate_fss`, `evaluate_wind`, `evaluate_diurnal`.
+- `modverif/station.py` — `StationEvaluator` class for grid-to-point (model vs station) comparison. Methods: `evaluate`, `evaluate_aggregate`, `evaluate_wind`, `evaluate_diurnal`.
+- `modverif/evaluate.py` — Convenience wrapper functions for all evaluator classes.
+- `modverif/cyclone.py` — Cyclone tracking and cyclone-region evaluation.
+- `modverif/plots.py` — Verification plots (scatter, station map, timeseries, performance diagram, Taylor diagram, diurnal cycle, FSS, wind rose).
+- `modverif/wrfio.py` — Legacy WRF I/O using h5py.
+- `modverif/tests/` — Test directory (pytest). Tests are excluded from sdist builds.
 - `docs/` — MkDocs documentation with Material theme and mkdocstrings for API reference.
 - `conda/meta.yaml` — Conda package recipe.
 - `plans/` — Feature plans and TODO lists.
@@ -43,7 +43,7 @@ All inputs/outputs use the [cfdb](https://github.com/mullenkamp/cfdb) format. St
 ## Running Tests
 
 ```bash
-uv run pytest model_eval/tests/
+uv run pytest modverif/tests/
 ```
 
 Integration tests requiring real cfdb datasets are skipped by default. Use `--source-dataset` and `--test-dataset` flags to enable them.

@@ -1,5 +1,5 @@
 """
-Tests for model_eval.plots module.
+Tests for modverif.plots module.
 
 Smoke tests that verify figures are created with correct structure.
 """
@@ -8,7 +8,7 @@ import pytest
 import matplotlib
 matplotlib.use('Agg')  # Non-interactive backend for testing
 
-from model_eval.plots import (
+from modverif.plots import (
     plot_lagged_correlation,
     plot_scatter,
     plot_station_map,

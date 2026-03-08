@@ -7,7 +7,7 @@ import cfdb
 import numpy as np
 import pytest
 
-from model_eval.evaluate import evaluate_fss, evaluate_models_domain, evaluate_wind
+from modverif.evaluate import evaluate_fss, evaluate_models_domain, evaluate_wind
 
 
 def create_mock_cfdb(
@@ -151,7 +151,7 @@ class TestEvaluateDiurnal:
         create_mock_cfdb(source_path, ['air_temperature'], n_times=48)
         create_mock_cfdb(test_path, ['air_temperature'], n_times=48)
 
-        from model_eval.evaluator import Evaluator
+        from modverif.evaluator import Evaluator
         evaluator = Evaluator(source_path, test_path)
         output_path = tmp_path / 'diurnal_output.cfdb'
         result = evaluator.evaluate_diurnal(output_path, variables=['air_temperature'], metrics=['bias', 'rmse'])

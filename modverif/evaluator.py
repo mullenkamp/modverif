@@ -7,7 +7,7 @@ from typing import Union, List, Tuple
 import cfdb
 import numpy as np
 
-from model_eval.metrics import (
+from modverif.metrics import (
     AVAILABLE_DOMAIN_METRICS,
     AVAILABLE_METRICS,
     AVAILABLE_WIND_METRICS,

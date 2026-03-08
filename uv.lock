@@ -1141,7 +1141,7 @@ wheels = [
 ]
 
 [[package]]
-name = "model-eval"
+name = "modverif"
 source = { editable = "." }
 dependencies = [
     { name = "cartopy" },

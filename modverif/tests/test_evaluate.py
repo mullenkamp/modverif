@@ -1,5 +1,5 @@
 """
-Tests for model_eval evaluation pipeline using cfdb datasets.
+Tests for modverif evaluation pipeline using cfdb datasets.
 """
 import pathlib
 
@@ -7,9 +7,9 @@ import cfdb
 import numpy as np
 import pytest
 
-from model_eval.evaluate import evaluate_cyclones, evaluate_models_cell, evaluate_models_domain
-from model_eval.evaluator import Evaluator
-from model_eval.metrics import AVAILABLE_DOMAIN_METRICS, AVAILABLE_METRICS
+from modverif.evaluate import evaluate_cyclones, evaluate_models_cell, evaluate_models_domain
+from modverif.evaluator import Evaluator
+from modverif.metrics import AVAILABLE_DOMAIN_METRICS, AVAILABLE_METRICS
 
 
 def create_mock_cfdb(

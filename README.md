@@ -1,14 +1,14 @@
-# model_eval
+# modverif
 
-[![build](https://github.com/mullenkamp/model_eval/workflows/Build/badge.svg)](https://github.com/mullenkamp/model_eval/actions)
-[![codecov](https://codecov.io/gh/mullenkamp/model_eval/branch/master/graph/badge.svg)](https://codecov.io/gh/mullenkamp/model_eval)
-[![PyPI version](https://badge.fury.io/py/model_eval.svg)](https://badge.fury.io/py/model_eval)
+[![build](https://github.com/mullenkamp/modverif/workflows/Build/badge.svg)](https://github.com/mullenkamp/modverif/actions)
+[![codecov](https://codecov.io/gh/mullenkamp/modverif/branch/master/graph/badge.svg)](https://codecov.io/gh/mullenkamp/modverif)
+[![PyPI version](https://badge.fury.io/py/modverif.svg)](https://badge.fury.io/py/modverif)
 
 ---
 
-**Documentation**: <a href="https://mullenkamp.github.io/model_eval/" target="_blank">https://mullenkamp.github.io/model_eval/</a>
+**Documentation**: <a href="https://mullenkamp.github.io/modverif/" target="_blank">https://mullenkamp.github.io/modverif/</a>
 
-**Source Code**: <a href="https://github.com/mullenkamp/model_eval" target="_blank">https://github.com/mullenkamp/model_eval</a>
+**Source Code**: <a href="https://github.com/mullenkamp/modverif" target="_blank">https://github.com/mullenkamp/modverif</a>
 
 ---
 
@@ -64,7 +64,7 @@ Publication-quality plots following MET/METplus conventions:
 ## Quick Start
 
 ```python
-from model_eval import Evaluator, StationEvaluator
+from modverif import Evaluator, StationEvaluator
 
 # Grid-to-grid evaluation
 evaluator = Evaluator('source.cfdb', 'test.cfdb')
@@ -87,7 +87,7 @@ evaluator.evaluate_wind('wind_output.cfdb', metrics=['vector_rmse', 'speed_bias'
 Convenience functions are also available:
 
 ```python
-from model_eval.evaluate import (
+from modverif.evaluate import (
     evaluate_models_cell,
     evaluate_models_domain,
     evaluate_stations,
@@ -99,7 +99,7 @@ from model_eval.evaluate import (
 ### Plotting
 
 ```python
-from model_eval.plots import plot_scatter, plot_station_map, plot_performance_diagram
+from modverif.plots import plot_scatter, plot_station_map, plot_performance_diagram
 
 plot_scatter(model_values, obs_values, save_path='scatter.png', variable_name='Temperature', units='K')
 plot_station_map(lons, lats, bias_values, save_path='map.png', metric_name='Bias')
@@ -109,13 +109,13 @@ plot_performance_diagram([0.85, 0.72], [0.15, 0.28], labels=['WRF-A', 'WRF-B'])
 ## Installation
 
 ```bash
-pip install model_eval
+pip install modverif
 ```
 
 Or with UV:
 
 ```bash
-uv add model_eval
+uv add modverif
 ```
 
 ## Dependencies

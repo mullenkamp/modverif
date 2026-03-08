@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-`model_eval` is a Python-based tool designed for the evaluation and comparison of multidimensional model outputs. Currently, it primarily focuses on the **WRF (Weather Research and Forecasting)** model, but it is architected to support other multidimensional data formats in the future.
+`modverif` is a Python-based tool designed for the evaluation and comparison of multidimensional model outputs. Currently, it primarily focuses on the **WRF (Weather Research and Forecasting)** model, but it is architected to support other multidimensional data formats in the future.
 
 The core purpose of the project is to provide a robust way to compare two or more model runs using various error metrics, supporting:
 - **Cell-by-cell comparison:** High-resolution spatial error analysis.
@@ -69,7 +69,7 @@ uv build
 ## Architecture and Development Conventions
 
 ### Package Structure
-- `model_eval/`: The main package directory.
+- `modverif/`: The main package directory.
     - `evaluate.py`: Contains the high-level API for model evaluation (`evaluate_models_cell`, `evaluate_models_domain`, `evaluate_cyclones`).
     - `wrfio.py`: Handles WRF-specific file I/O, providing abstractions for NetCDF4/HDF5 files.
     - `cyclone.py`: Specialized logic for cyclone tracking, sea level pressure (SLP) calculation, and radius estimation.

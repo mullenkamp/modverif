@@ -1,9 +1,9 @@
 """
-Tests for new metric functions added in model_eval.metrics.
+Tests for new metric functions added in modverif.metrics.
 """
 import numpy as np
 import pytest
-from model_eval.metrics import (
+from modverif.metrics import (
     compute_lagged_correlation,
     compute_mae,
     compute_mean_bias,

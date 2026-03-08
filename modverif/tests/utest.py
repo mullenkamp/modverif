@@ -13,12 +13,12 @@ import pathlib
 # import salem
 from datetime import date
 
-module_path = '/home/mike/git/model_eval'
+module_path = '/home/mike/git/modverif'
 if module_path not in sys.path:
     sys.path.append(module_path)
 
-import model_eval
-from model_eval.evaluator import Evaluator
+import modverif
+from modverif.evaluator import Evaluator
 
 ##################################################
 #### Parameters

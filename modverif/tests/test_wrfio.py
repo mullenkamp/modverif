@@ -1,5 +1,5 @@
 """
-Tests for the model_eval.io module.
+Tests for the modverif.io module.
 """
 import pathlib
 import tempfile
@@ -8,7 +8,7 @@ import h5py
 import numpy as np
 import pytest
 
-from model_eval.wrfio import NetCDF4Writer, WRFFile
+from modverif.wrfio import NetCDF4Writer, WRFFile
 
 
 class TestWRFFile:
@@ -433,7 +433,7 @@ class TestNetCDF4Writer:
 
         with h5py.File(filepath, 'r') as f:
             assert f.attrs['Conventions'] == b'CF-1.8'
-            assert b'model_eval' in f.attrs['history']
+            assert b'modverif' in f.attrs['history']
             assert f.attrs['source'] == b'test'
             assert f.attrs['custom_attr'] == b'value'
 

@@ -7,9 +7,9 @@ from typing import Union, List, Tuple
 import cfdb
 import numpy as np
 
-from model_eval.evaluator import Evaluator
-from model_eval.station import StationEvaluator
-from model_eval.cyclone import (
+from modverif.evaluator import Evaluator
+from modverif.station import StationEvaluator
+from modverif.cyclone import (
     CyclonePosition,
     _estimate_cyclone_radius,
     _find_pressure_minimum,
@@ -36,7 +36,7 @@ def evaluate_models_cell(
     """
     Evaluate two model runs at cell level.
 
-    Convenience wrapper around :class:`~model_eval.evaluator.Evaluator`.
+    Convenience wrapper around :class:`~modverif.evaluator.Evaluator`.
 
     Parameters
     ----------
@@ -85,7 +85,7 @@ def evaluate_models_domain(
     """
     Evaluate two model runs at domain-aggregated level.
 
-    Convenience wrapper around :class:`~model_eval.evaluator.Evaluator`.
+    Convenience wrapper around :class:`~modverif.evaluator.Evaluator`.
 
     Parameters
     ----------
@@ -173,7 +173,7 @@ def evaluate_cyclones(
     pathlib.Path
         Path to the output cfdb dataset.
     """
-    from model_eval.metrics import AVAILABLE_DOMAIN_METRICS
+    from modverif.metrics import AVAILABLE_DOMAIN_METRICS
 
     source = pathlib.Path(source)
     test = pathlib.Path(test)
@@ -359,7 +359,7 @@ def evaluate_stations(
     """
     Evaluate model output against station observations.
 
-    Convenience wrapper around :class:`~model_eval.station.StationEvaluator`.
+    Convenience wrapper around :class:`~modverif.station.StationEvaluator`.
 
     Parameters
     ----------
@@ -411,7 +411,7 @@ def evaluate_stations_aggregate(
     """
     Evaluate model vs station observations with aggregation over stations.
 
-    Convenience wrapper around :class:`~model_eval.station.StationEvaluator`.
+    Convenience wrapper around :class:`~modverif.station.StationEvaluator`.
 
     Parameters
     ----------
@@ -462,7 +462,7 @@ def evaluate_fss(
     """
     Compute Fractions Skill Score across multiple spatial scales.
 
-    Convenience wrapper around :meth:`~model_eval.evaluator.Evaluator.evaluate_fss`.
+    Convenience wrapper around :meth:`~modverif.evaluator.Evaluator.evaluate_fss`.
 
     Parameters
     ----------
@@ -508,7 +508,7 @@ def evaluate_wind(
     """
     Compute vector wind metrics from U/V components.
 
-    Convenience wrapper around :meth:`~model_eval.evaluator.Evaluator.evaluate_wind`.
+    Convenience wrapper around :meth:`~modverif.evaluator.Evaluator.evaluate_wind`.
 
     Parameters
     ----------

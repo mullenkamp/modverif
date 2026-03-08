@@ -1,5 +1,5 @@
 """
-Pytest configuration and fixtures for model_eval tests.
+Pytest configuration and fixtures for modverif tests.
 """
 import pathlib
 

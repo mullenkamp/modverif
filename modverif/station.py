@@ -11,7 +11,7 @@ import cfdb
 import numpy as np
 import shapely
 
-from model_eval.metrics import (
+from modverif.metrics import (
     AVAILABLE_STATION_METRICS,
     AVAILABLE_WIND_METRICS,
     compute_ane_1d,

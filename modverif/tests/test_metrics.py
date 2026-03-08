@@ -1,9 +1,9 @@
 """
-Tests for model_eval.metrics module.
+Tests for modverif.metrics module.
 """
 import numpy as np
 import pytest
-from model_eval.metrics import (
+from modverif.metrics import (
     compute_ne,
     compute_ane,
     compute_rse,

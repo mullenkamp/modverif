@@ -1,8 +1,8 @@
-site_name: model_eval
+site_name: modverif
 site_description: 
 
-repo_url: https://github.com/mullenkamp/model_eval
-repo_name: mullenkamp/model_eval
+repo_url: https://github.com/mullenkamp/modverif
+repo_name: mullenkamp/modverif
 
 theme:
     name: material
@@ -50,9 +50,9 @@ plugins:
 
 watch:
     - docs
-    - model_eval
+    - modverif
 
 nav:
     - About: index.md
     - Reference:
-        - model_eval: reference/model_eval.md
+        - modverif: reference/modverif.md
