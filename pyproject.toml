@@ -1,5 +1,5 @@
 [project]
-name = "model_eval"
+name = "modverif"
 authors = [
   { name = "mullenkamp", email = "mullenkamp1@gmail.com" }
 ]
@@ -9,12 +9,16 @@ dynamic = ["version"]
 classifiers = [
     "Programming Language :: Python :: 3 :: Only",
 ]
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = [
+  'cfdb',
+  'pyproj',
   'h5py',
-  'rechunkit',
+  'rechunkit>=0.2.1',
   'numpy>2',
-  
+  'matplotlib',
+  'cartopy',
+  'scipy',
 ]
 
 [build-system]
@@ -41,7 +45,7 @@ allow-direct-references = true
 # [tool.hatch.version]
 # source = "regex_commit"
 # commit_extra_args = ["-e"]
-# path = "model_eval/__init__.py"
+# path = "modverif/__init__.py"
 
 [tool.hatch.envs.default]
 python = "3.11"
@@ -68,7 +72,7 @@ dependencies = [
   "ruff>=0.0.243",
 ]
 [tool.hatch.envs.lint.scripts]
-typing = "mypy --install-types --non-interactive {args:src/model_eval tests}"
+typing = "mypy --install-types --non-interactive {args:src/modverif tests}"
 style = [
   "ruff {args:.}",
   "black --check --diff {args:.}",
@@ -148,7 +152,7 @@ unfixable = [
 ]
 
 [tool.ruff.isort]
-known-first-party = ["model_eval"]
+known-first-party = ["modverif"]
 
 [tool.ruff.flake8-tidy-imports]
 ban-relative-imports = "all"
@@ -158,16 +162,16 @@ ban-relative-imports = "all"
 "tests/**/*" = ["PLR2004", "S101", "TID252"]
 
 [tool.coverage.run]
-source_pkgs = ["model_eval", "tests"]
+source_pkgs = ["modverif", "tests"]
 branch = true
 parallel = true
 omit = [
-  "src/model_eval/__about__.py",
+  "src/modverif/__about__.py",
 ]
 
 [tool.coverage.paths]
-model_eval = ["src/model_eval", "*/model_eval/src/model_eval"]
-tests = ["tests", "*/model_eval/tests"]
+modverif = ["src/modverif", "*/modverif/src/modverif"]
+tests = ["tests", "*/modverif/tests"]
 
 [tool.coverage.report]
 exclude_lines = [
@@ -177,16 +181,16 @@ exclude_lines = [
 ]
 
 [project.urls]
-Documentation = "https://mullenkamp.github.io/model_eval/"
-Source = "https://github.com/mullenkamp/model_eval"
+Documentation = "https://mullenkamp.github.io/modverif/"
+Source = "https://github.com/mullenkamp/modverif"
 
 [tool.hatch.build.targets.sdist]
 include = [
-    "/model_eval",
+    "/modverif",
 ]
 exclude = [
-    "/model_eval/tests/*",
+    "/modverif/tests/*",
 ]
 
 [tool.hatch.version]
-path = "model_eval/__init__.py"
+path = "modverif/__init__.py"

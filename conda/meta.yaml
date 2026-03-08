@@ -1,5 +1,5 @@
-{% set name = "model_eval" %}
-{% set package_name = "model_eval" %}
+{% set name = "modverif" %}
+{% set package_name = "modverif" %}
 {% set version = "0.1.0" %}
 # {% set sha256 = "72a156e328247c91cb7f5440ffa98069c0090892f8d9d07fd57e36c0611a0403" %}
 
@@ -41,13 +41,13 @@ requirements:
 
 test:
   imports:
-    - model_eval
+    - modverif
 
 about:
-  home: https://github.com/mullenkamp/model_eval
+  home: https://github.com/mullenkamp/modverif
   license: Apache Software License 2.0
   license_family: APACHE
   summary: ""
   description: 
-  doc_url: https://mullenkamp.github.io/model_eval/
+  doc_url: https://mullenkamp.github.io/modverif/
   dev_url: ''

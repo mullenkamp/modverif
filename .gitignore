@@ -115,5 +115,5 @@ ENV/
 data/*
 
 # Test config files
-/model_eval/tests/*.toml
-/model_eval/tests/*.yml
+/modverif/tests/*.toml
+/modverif/tests/*.yml
