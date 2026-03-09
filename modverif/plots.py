@@ -165,9 +165,12 @@ def plot_station_map(
             figsize=figsize, dpi=dpi,
             subplot_kw={'projection': ccrs.PlateCarree()},
         )
+        ax.set_facecolor('#D6EAF8')
+        ax.add_feature(cfeature.LAND, facecolor='#F5F5F5', edgecolor='none')
+        ax.add_feature(cfeature.LAKES, facecolor='#D6EAF8', edgecolor='none')
         ax.add_feature(cfeature.COASTLINE, linewidth=0.5)
-        ax.add_feature(cfeature.BORDERS, linewidth=0.3)
-        ax.gridlines(draw_labels=True, linewidth=0.3)
+        ax.add_feature(cfeature.BORDERS, linewidth=0.3, linestyle=':')
+        ax.gridlines(draw_labels=True, linewidth=0.3, alpha=0.5)
         sc = ax.scatter(
             station_lons, station_lats, c=values, s=marker_size,
             cmap=cmap, vmin=vmin, vmax=vmax,

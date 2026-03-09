@@ -1,4 +1,4 @@
 from modverif.evaluator import Evaluator
 from modverif.station import StationEvaluator
 
-__version__ = '0.1.0'
+__version__ = '0.1.1'
