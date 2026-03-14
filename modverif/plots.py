@@ -433,7 +433,8 @@ def plot_taylor_diagram(
         ax.scatter(theta, std_m, c=[colors[i]], s=100, zorder=5, edgecolors='black', linewidth=0.5, label=label)
 
     ax.set_title('Taylor Diagram', pad=20)
-    ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.0))
+    if len(std_model) <= 10:
+        ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.0))
 
     fig.tight_layout()
     if save_path:
