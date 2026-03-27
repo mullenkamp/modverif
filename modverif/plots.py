@@ -165,9 +165,12 @@ def plot_station_map(
             figsize=figsize, dpi=dpi,
             subplot_kw={'projection': ccrs.PlateCarree()},
         )
+        ax.set_facecolor('#D6EAF8')
+        ax.add_feature(cfeature.LAND, facecolor='#F5F5F5', edgecolor='none')
+        ax.add_feature(cfeature.LAKES, facecolor='#D6EAF8', edgecolor='none')
         ax.add_feature(cfeature.COASTLINE, linewidth=0.5)
-        ax.add_feature(cfeature.BORDERS, linewidth=0.3)
-        ax.gridlines(draw_labels=True, linewidth=0.3)
+        ax.add_feature(cfeature.BORDERS, linewidth=0.3, linestyle=':')
+        ax.gridlines(draw_labels=True, linewidth=0.3, alpha=0.5)
         sc = ax.scatter(
             station_lons, station_lats, c=values, s=marker_size,
             cmap=cmap, vmin=vmin, vmax=vmax,
@@ -430,7 +433,8 @@ def plot_taylor_diagram(
         ax.scatter(theta, std_m, c=[colors[i]], s=100, zorder=5, edgecolors='black', linewidth=0.5, label=label)
 
     ax.set_title('Taylor Diagram', pad=20)
-    ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.0))
+    if len(std_model) <= 10:
+        ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.0))
 
     fig.tight_layout()
     if save_path:
