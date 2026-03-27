@@ -1,5 +1,6 @@
 site_name: modverif
-site_description: 
+site_description: Model verification following MET/METplus standards
+site_url: https://mullenkamp.github.io/modverif/
 
 repo_url: https://github.com/mullenkamp/modverif
 repo_name: mullenkamp/modverif
@@ -27,9 +28,18 @@ theme:
             icon: material/brightness-4
             name: Switch to light mode
 
+    features:
+        - navigation.sections
+        - navigation.expand
+        - navigation.top
+        - content.code.copy
+        - toc.follow
+
 markdown_extensions:
     - toc:
         permalink: true
+    - admonition
+    - pymdownx.details
     - pymdownx.highlight:
         anchor_linenums: true
     - pymdownx.tasklist:
@@ -43,16 +53,29 @@ plugins:
     - mkdocstrings:
         handlers:
             python:
-                import:
+                inventories:
                     - https://docs.python.org/3.11/objects.inv
                 options:
                     docstring_style: google
+                    show_root_heading: false
+                    show_source: false
 
 watch:
     - docs
     - modverif
 
 nav:
-    - About: index.md
+    - Home: index.md
+    - Getting Started:
+        - Installation: getting-started/installation.md
+        - Quick Start: getting-started/quickstart.md
+    - User Guide:
+        - Grid-to-Grid Evaluation: guide/grid-evaluation.md
+        - Station Evaluation: guide/station-evaluation.md
+        - Cyclone Evaluation: guide/cyclone-evaluation.md
+        - Storm Composite Plots: guide/composite-plots.md
+        - Verification Plots: guide/verification-plots.md
     - Reference:
-        - modverif: reference/modverif.md
+        - Metrics: reference/metrics.md
+        - API: reference/modverif.md
+    - Development: development.md
