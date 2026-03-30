@@ -17,3 +17,5 @@ pip install cartopy
 # or
 uv add cartopy
 ```
+
+See the [Cartopy Projection Notes](../guide/composite-plots.md#cartopy-projection-notes) in the composite plots guide for important caveats when working with Southern Hemisphere and antimeridian-crossing domains.

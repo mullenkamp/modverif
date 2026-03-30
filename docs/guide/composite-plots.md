@@ -152,5 +152,63 @@ All composite functions accept these keyword arguments:
 | `mslp_levels` | 960--1040 by 4 | Contour levels for MSLP in hPa |
 | `mslp_color` | `'black'` | Color for MSLP contour lines |
 | `vector_color` | `'black'` | Color for barbs or quiver arrows |
-| `figsize` | `(14, 10)` | Figure size (comparison default: `(24, 10)`) |
+| `figsize` | auto | Figure size (auto-computed from domain aspect ratio) |
 | `dpi` | 150 | Output resolution |
+
+## Cartopy Projection Notes
+
+modverif uses [cartopy](https://scitools.org.uk/cartopy/) for geographic map projections. Cartopy is optional -- plots fall back to plain matplotlib axes if it is not installed -- but there are several non-obvious behaviours to be aware of when working with projected WRF domains.
+
+### Lambert Conformal `cutoff` and Southern Hemisphere domains
+
+Cartopy's `LambertConformal` projection has a `cutoff` parameter (default `-30`) that silently limits how far the map extends from the projection centre. The default boundary sits at 30°S, so any data north of 30°S is simply not displayed -- with no error or warning.
+
+This is a common issue for Southern Hemisphere WRF domains. For example, a domain centred on New Zealand at 34°S with an outer domain extending to 15°S will have its northern portion clipped.
+
+modverif handles this automatically by setting `cutoff=30` for SH projections in `_pyproj_to_cartopy`. If you create your own cartopy axes for a SH Lambert Conformal domain, remember to pass an appropriate cutoff:
+
+```python
+import cartopy.crs as ccrs
+
+proj = ccrs.LambertConformal(
+    central_longitude=178, central_latitude=-34,
+    standard_parallels=[-41, -41],
+    cutoff=30,  # default -30 clips SH domains at 30°S
+)
+```
+
+### Antimeridian (180° longitude)
+
+Domains that cross the 180° meridian (e.g., New Zealand) require careful handling of longitude conventions:
+
+- **ERA5 / NCAR archive data** typically uses 0--360° longitude convention, where values near the antimeridian are stored as 180--190° rather than -180° to -170°.
+- **pyproj** returns longitudes in -180/180° convention when transforming projected coordinates (e.g., Lambert Conformal) to geographic coordinates.
+- This mismatch means that a naive regridding interpolation will produce NaN for grid points near the antimeridian, because -175° falls outside an ERA5 source range of [144, 190].
+
+The fix is to convert target longitudes to 0--360° before interpolation:
+
+```python
+from scipy.interpolate import RegularGridInterpolator
+
+# Transform WRF projected coords to lat/lon
+wrf_lons, wrf_lats = transformer.transform(xx, yy)
+
+# Convert to 0-360 to match ERA5 convention
+wrf_lons_360 = wrf_lons % 360
+
+# Interpolate with explicit convention match
+interp = RegularGridInterpolator(
+    (era5_lats, era5_lons), data,
+    method='linear', bounds_error=False, fill_value=np.nan,
+)
+target_points = np.column_stack([wrf_lats.ravel(), wrf_lons_360.ravel()])
+regridded = interp(target_points).reshape(ny, nx)
+```
+
+Note that cfdb's `GridInterp.to_grid()` transforms target coordinates internally via pyproj (returning -180/180°), so it cannot resolve the convention mismatch on its own. Use `scipy.interpolate.RegularGridInterpolator` directly for antimeridian-crossing domains.
+
+Longitude values > 180° in WRF `latitude`/`longitude` auxiliary variables are also masked out in modverif's composite plots to prevent cartopy from wrapping the map around the full globe. This only applies to datasets with geographic (lat/lon) coordinates, not projected (y/x) grids.
+
+### Comparison panel spacing
+
+Side-by-side comparison plots auto-compute the figure size and subplot spacing from the domain's aspect ratio. Cartopy GeoAxes maintain the map's native aspect ratio regardless of how much space the subplot allocates, so different domain shapes need different spacing to avoid gaps or overlaps. If you need manual control, pass an explicit `figsize` to the comparison functions.

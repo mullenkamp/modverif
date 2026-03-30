@@ -5,6 +5,7 @@ All functions return (fig, ax) tuples and optionally save to file.
 Cartopy is optional for geographic plots.
 """
 import pathlib
+import warnings
 from typing import Union
 
 import matplotlib.pyplot as plt
@@ -822,7 +823,9 @@ def plot_station_evaluation(
     if plot_type == 'map':
         # Average over time for map display
         if data.ndim == 2:
-            values = np.nanmean(data, axis=0)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', RuntimeWarning)
+                values = np.nanmean(data, axis=0)
         else:
             values = data
         return plot_station_map(

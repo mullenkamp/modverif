@@ -38,12 +38,17 @@ def _pyproj_to_cartopy(crs):
     proj_name = cf.get('grid_mapping_name', '')
 
     if proj_name == 'lambert_conformal_conic':
+        central_lat = cf.get('latitude_of_projection_origin', 0)
+        # Default cutoff=-30 clips SH domains at 30°S.  Set the cutoff
+        # on the opposite side of the equator so the full domain is visible.
+        cutoff = 30 if central_lat < 0 else -30
         return ccrs.LambertConformal(
             central_longitude=cf.get('longitude_of_central_meridian', 0),
-            central_latitude=cf.get('latitude_of_projection_origin', 0),
+            central_latitude=central_lat,
             standard_parallels=cf.get('standard_parallel', []),
             false_easting=cf.get('false_easting', 0),
             false_northing=cf.get('false_northing', 0),
+            cutoff=cutoff,
         )
     elif proj_name == 'polar_stereographic':
         return ccrs.Stereographic(
@@ -84,19 +89,57 @@ def _read_grid_from_ds(ds):
 
     if 'latitude' in coord_names or 'latitude' in var_names:
         xlat, xlong = _read_latlon_2d(ds)
-        return xlong, xlat, None, False
+        # Discard columns past the antimeridian to avoid cartopy wrapping issues
+        lon_mask = None
+        if xlong.ndim == 2 and np.any(xlong > 180):
+            lon_mask = xlong[0, :] <= 180
+            xlong = xlong[:, lon_mask]
+            xlat = xlat[:, lon_mask]
+        return xlong, xlat, None, False, lon_mask
 
     if 'y' in coord_names and 'x' in coord_names and ds.crs is not None:
         y_1d = ds['y'].data
         x_1d = ds['x'].data
         x2d, y2d = np.meshgrid(x_1d, y_1d)
-        return x2d, y2d, ds.crs, True
+        return x2d, y2d, ds.crs, True, None
 
     raise ValueError(
         "Dataset must contain either 'latitude'/'longitude' coordinates "
         "or 'y'/'x' coordinates with a CRS. "
         f"Found coords={ds.coord_names}, crs={ds.crs}"
     )
+
+
+def _map_aspect_ratio(x2d, y2d, is_projected):
+    """
+    Estimate the height/width aspect ratio of the map domain.
+
+    For projected grids uses native coordinate extents directly.
+    For geographic grids corrects longitude range for latitude.
+
+    Returns
+    -------
+    float
+        Aspect ratio (height / width). Values > 1 mean taller than wide.
+    """
+    if is_projected:
+        x_range = float(x2d.max() - x2d.min())
+        y_range = float(y2d.max() - y2d.min())
+    else:
+        y_range = float(y2d.max() - y2d.min())
+        mid_lat = np.radians((float(y2d.max()) + float(y2d.min())) / 2)
+        x_range = float(x2d.max() - x2d.min()) * abs(np.cos(mid_lat))
+
+    if x_range <= 0:
+        return 1.0
+    return y_range / x_range
+
+
+def _apply_lon_mask(data_2d, lon_mask):
+    """Discard columns past the antimeridian if needed."""
+    if lon_mask is not None:
+        return data_2d[:, lon_mask]
+    return data_2d
 
 
 def _draw_composite_layers(
@@ -223,6 +266,9 @@ def _draw_composite_layers(
         ax.add_feature(cfeature.COASTLINE, linewidth=1, edgecolor='black')
         ax.add_feature(cfeature.BORDERS, linewidth=0.5, linestyle='--', edgecolor='gray')
         gl = ax.gridlines(draw_labels=True, linewidth=0.3, alpha=0.5)
+        gl.x_inline = False
+        gl.y_inline = False
+        gl.rotate_labels = False
         gl.top_labels = gridline_labels.get('top', False)
         gl.right_labels = gridline_labels.get('right', False)
         gl.bottom_labels = gridline_labels.get('bottom', True)
@@ -282,7 +328,7 @@ def _plot_storm_composite_frame(
     mslp_levels: list = None,
     mslp_color: str = 'black',
     vector_color: str = 'black',
-    figsize: tuple = (14, 10),
+    figsize: tuple = None,
     dpi: int = 150,
     title: str = None,
 ):
@@ -325,8 +371,8 @@ def _plot_storm_composite_frame(
         Color for MSLP contour lines. Default is ``'black'``.
     vector_color : str
         Color for barbs or quiver arrows. Default is ``'black'``.
-    figsize : tuple
-        Figure size in inches.
+    figsize : tuple, optional
+        Figure size in inches. Auto-computed from domain aspect ratio if None.
     dpi : int
         Output resolution.
     title : str, optional
@@ -337,6 +383,8 @@ def _plot_storm_composite_frame(
     tuple or None
         ``(fig, ax)`` if ``output_path`` is None, otherwise None.
     """
+    if figsize is None:
+        figsize = (14, 10)
     # Convert MSLP to hPa if in Pa
     if np.nanmean(mslp) > 10000:
         mslp_hpa = mslp / 100.0
@@ -354,6 +402,7 @@ def _plot_storm_composite_frame(
 
         fig, ax = plt.subplots(figsize=figsize, subplot_kw={'projection': map_projection})
         plot_kwargs = {'transform': data_transform}
+
     else:
         fig, ax = plt.subplots(figsize=figsize)
         plot_kwargs = {}
@@ -432,7 +481,7 @@ def plot_storm_composite_timestep(
         raise FileNotFoundError(f"Dataset not found: {cfdb_path}")
 
     with cfdb.open_dataset(cfdb_path) as ds:
-        x2d, y2d, data_crs, is_projected = _read_grid_from_ds(ds)
+        x2d, y2d, data_crs, is_projected, lon_mask = _read_grid_from_ds(ds)
         time_values = ds['time'].data
 
         # Validate time index
@@ -440,15 +489,15 @@ def plot_storm_composite_timestep(
             raise IndexError(f"time_index {time_index} out of range [0, {len(time_values) - 1}]")
 
         # Read fields
-        vimf_u = _read_var_2d(ds, vimf_u_var, time_index)
-        vimf_v = _read_var_2d(ds, vimf_v_var, time_index)
-        pwat = _read_var_2d(ds, pwat_var, time_index)
+        vimf_u = _apply_lon_mask(_read_var_2d(ds, vimf_u_var, time_index), lon_mask)
+        vimf_v = _apply_lon_mask(_read_var_2d(ds, vimf_v_var, time_index), lon_mask)
+        pwat = _apply_lon_mask(_read_var_2d(ds, pwat_var, time_index), lon_mask)
 
         # MSLP with compute fallback
         if mslp_var == 'mslp':
-            mslp = _read_slp_from_cfdb(ds, time_index)
+            mslp = _apply_lon_mask(_read_slp_from_cfdb(ds, time_index), lon_mask)
         else:
-            mslp = _read_var_2d(ds, mslp_var, time_index)
+            mslp = _apply_lon_mask(_read_var_2d(ds, mslp_var, time_index), lon_mask)
 
         time_str = str(time_values[time_index])
 
@@ -532,7 +581,7 @@ def plot_storm_composite(
     png_files = []
 
     with cfdb.open_dataset(cfdb_path) as ds:
-        x2d, y2d, data_crs, is_projected = _read_grid_from_ds(ds)
+        x2d, y2d, data_crs, is_projected, lon_mask = _read_grid_from_ds(ds)
         time_values = ds['time'].data
         n_times = len(time_values)
 
@@ -571,14 +620,14 @@ def plot_storm_composite(
                 continue
 
             # Read fields
-            vimf_u = _read_var_2d(ds, vimf_u_var, t)
-            vimf_v = _read_var_2d(ds, vimf_v_var, t)
-            pwat = _read_var_2d(ds, pwat_var, t)
+            vimf_u = _apply_lon_mask(_read_var_2d(ds, vimf_u_var, t), lon_mask)
+            vimf_v = _apply_lon_mask(_read_var_2d(ds, vimf_v_var, t), lon_mask)
+            pwat = _apply_lon_mask(_read_var_2d(ds, pwat_var, t), lon_mask)
 
             if mslp_var == 'mslp':
-                mslp = _read_slp_from_cfdb(ds, t)
+                mslp = _apply_lon_mask(_read_slp_from_cfdb(ds, t), lon_mask)
             else:
-                mslp = _read_var_2d(ds, mslp_var, t)
+                mslp = _apply_lon_mask(_read_var_2d(ds, mslp_var, t), lon_mask)
 
             time_str = str(t_val)
             frame_path = output_dir / f'{filename_prefix}_t{t:03d}.png'
@@ -625,7 +674,7 @@ def _plot_storm_composite_comparison_frame(
     mslp_levels: list = None,
     mslp_color: str = 'black',
     vector_color: str = 'black',
-    figsize: tuple = (24, 10),
+    figsize: tuple = None,
     dpi: int = 150,
     title: str = None,
 ):
@@ -672,8 +721,8 @@ def _plot_storm_composite_comparison_frame(
         Color for MSLP contour lines.
     vector_color : str
         Color for barbs or quiver arrows.
-    figsize : tuple
-        Figure size in inches. Default is ``(24, 10)``.
+    figsize : tuple, optional
+        Figure size in inches. Auto-computed from domain aspect ratio if None.
     dpi : int
         Output resolution.
     title : str, optional
@@ -697,6 +746,15 @@ def _plot_storm_composite_comparison_frame(
         else:
             pwat_levels = np.linspace(0, 80, 17)
 
+    # Auto-compute figsize and wspace from domain aspect ratio
+    map_aspect = _map_aspect_ratio(x2d_a, y2d_a, is_projected_a)
+    fig_height = 10
+    if figsize is None:
+        panel_width = fig_height / max(map_aspect, 0.3)
+        figsize = (2 * panel_width + 3, fig_height)
+
+    wspace = 0.02
+
     # Set up projections for each panel
     if HAS_CARTOPY:
         if is_projected_a and data_crs_a is not None:
@@ -713,11 +771,14 @@ def _plot_storm_composite_comparison_frame(
             proj_b = ccrs.PlateCarree()
             transform_b = ccrs.PlateCarree()
 
+        from matplotlib.gridspec import GridSpec
         fig = plt.figure(figsize=figsize)
-        ax_a = fig.add_subplot(1, 2, 1, projection=proj_a)
-        ax_b = fig.add_subplot(1, 2, 2, projection=proj_b)
+        gs = GridSpec(1, 2, figure=fig, wspace=wspace)
+        ax_a = fig.add_subplot(gs[0, 0], projection=proj_a)
+        ax_b = fig.add_subplot(gs[0, 1], projection=proj_b)
         plot_kwargs_a = {'transform': transform_a}
         plot_kwargs_b = {'transform': transform_b}
+
     else:
         fig, (ax_a, ax_b) = plt.subplots(1, 2, figsize=figsize)
         plot_kwargs_a = {}
@@ -827,8 +888,8 @@ def plot_storm_composite_comparison_timestep(
         raise FileNotFoundError(f"Dataset not found: {cfdb_path_b}")
 
     with cfdb.open_dataset(cfdb_path_a) as ds_a, cfdb.open_dataset(cfdb_path_b) as ds_b:
-        x2d_a, y2d_a, data_crs_a, is_projected_a = _read_grid_from_ds(ds_a)
-        x2d_b, y2d_b, data_crs_b, is_projected_b = _read_grid_from_ds(ds_b)
+        x2d_a, y2d_a, data_crs_a, is_projected_a, lon_mask_a = _read_grid_from_ds(ds_a)
+        x2d_b, y2d_b, data_crs_b, is_projected_b, lon_mask_b = _read_grid_from_ds(ds_b)
 
         times_a = ds_a['time'].data
         times_b = ds_b['time'].data
@@ -842,22 +903,22 @@ def plot_storm_composite_comparison_timestep(
         t_val, idx_a, idx_b = matched[time_index]
 
         # Read fields from dataset A
-        vimf_u_a = _read_var_2d(ds_a, vimf_u_var_a, idx_a)
-        vimf_v_a = _read_var_2d(ds_a, vimf_v_var_a, idx_a)
-        pwat_a = _read_var_2d(ds_a, pwat_var_a, idx_a)
+        vimf_u_a = _apply_lon_mask(_read_var_2d(ds_a, vimf_u_var_a, idx_a), lon_mask_a)
+        vimf_v_a = _apply_lon_mask(_read_var_2d(ds_a, vimf_v_var_a, idx_a), lon_mask_a)
+        pwat_a = _apply_lon_mask(_read_var_2d(ds_a, pwat_var_a, idx_a), lon_mask_a)
         if mslp_var_a == 'mslp':
-            mslp_a = _read_slp_from_cfdb(ds_a, idx_a)
+            mslp_a = _apply_lon_mask(_read_slp_from_cfdb(ds_a, idx_a), lon_mask_a)
         else:
-            mslp_a = _read_var_2d(ds_a, mslp_var_a, idx_a)
+            mslp_a = _apply_lon_mask(_read_var_2d(ds_a, mslp_var_a, idx_a), lon_mask_a)
 
         # Read fields from dataset B
-        vimf_u_b = _read_var_2d(ds_b, vimf_u_var_b, idx_b)
-        vimf_v_b = _read_var_2d(ds_b, vimf_v_var_b, idx_b)
-        pwat_b = _read_var_2d(ds_b, pwat_var_b, idx_b)
+        vimf_u_b = _apply_lon_mask(_read_var_2d(ds_b, vimf_u_var_b, idx_b), lon_mask_b)
+        vimf_v_b = _apply_lon_mask(_read_var_2d(ds_b, vimf_v_var_b, idx_b), lon_mask_b)
+        pwat_b = _apply_lon_mask(_read_var_2d(ds_b, pwat_var_b, idx_b), lon_mask_b)
         if mslp_var_b == 'mslp':
-            mslp_b = _read_slp_from_cfdb(ds_b, idx_b)
+            mslp_b = _apply_lon_mask(_read_slp_from_cfdb(ds_b, idx_b), lon_mask_b)
         else:
-            mslp_b = _read_var_2d(ds_b, mslp_var_b, idx_b)
+            mslp_b = _apply_lon_mask(_read_var_2d(ds_b, mslp_var_b, idx_b), lon_mask_b)
 
         time_str = str(t_val)
 
@@ -960,8 +1021,8 @@ def plot_storm_composite_comparison(
     png_files = []
 
     with cfdb.open_dataset(cfdb_path_a) as ds_a, cfdb.open_dataset(cfdb_path_b) as ds_b:
-        x2d_a, y2d_a, data_crs_a, is_projected_a = _read_grid_from_ds(ds_a)
-        x2d_b, y2d_b, data_crs_b, is_projected_b = _read_grid_from_ds(ds_b)
+        x2d_a, y2d_a, data_crs_a, is_projected_a, lon_mask_a = _read_grid_from_ds(ds_a)
+        x2d_b, y2d_b, data_crs_b, is_projected_b, lon_mask_b = _read_grid_from_ds(ds_b)
 
         times_a = ds_a['time'].data
         times_b = ds_b['time'].data
@@ -992,22 +1053,22 @@ def plot_storm_composite_comparison(
 
         for i, (t_val, idx_a, idx_b) in enumerate(matched):
             # Read fields from dataset A
-            vimf_u_a = _read_var_2d(ds_a, vimf_u_var_a, idx_a)
-            vimf_v_a = _read_var_2d(ds_a, vimf_v_var_a, idx_a)
-            pwat_a = _read_var_2d(ds_a, pwat_var_a, idx_a)
+            vimf_u_a = _apply_lon_mask(_read_var_2d(ds_a, vimf_u_var_a, idx_a), lon_mask_a)
+            vimf_v_a = _apply_lon_mask(_read_var_2d(ds_a, vimf_v_var_a, idx_a), lon_mask_a)
+            pwat_a = _apply_lon_mask(_read_var_2d(ds_a, pwat_var_a, idx_a), lon_mask_a)
             if mslp_var_a == 'mslp':
-                mslp_a = _read_slp_from_cfdb(ds_a, idx_a)
+                mslp_a = _apply_lon_mask(_read_slp_from_cfdb(ds_a, idx_a), lon_mask_a)
             else:
-                mslp_a = _read_var_2d(ds_a, mslp_var_a, idx_a)
+                mslp_a = _apply_lon_mask(_read_var_2d(ds_a, mslp_var_a, idx_a), lon_mask_a)
 
             # Read fields from dataset B
-            vimf_u_b = _read_var_2d(ds_b, vimf_u_var_b, idx_b)
-            vimf_v_b = _read_var_2d(ds_b, vimf_v_var_b, idx_b)
-            pwat_b = _read_var_2d(ds_b, pwat_var_b, idx_b)
+            vimf_u_b = _apply_lon_mask(_read_var_2d(ds_b, vimf_u_var_b, idx_b), lon_mask_b)
+            vimf_v_b = _apply_lon_mask(_read_var_2d(ds_b, vimf_v_var_b, idx_b), lon_mask_b)
+            pwat_b = _apply_lon_mask(_read_var_2d(ds_b, pwat_var_b, idx_b), lon_mask_b)
             if mslp_var_b == 'mslp':
-                mslp_b = _read_slp_from_cfdb(ds_b, idx_b)
+                mslp_b = _apply_lon_mask(_read_slp_from_cfdb(ds_b, idx_b), lon_mask_b)
             else:
-                mslp_b = _read_var_2d(ds_b, mslp_var_b, idx_b)
+                mslp_b = _apply_lon_mask(_read_var_2d(ds_b, mslp_var_b, idx_b), lon_mask_b)
 
             time_str = str(t_val)
             frame_path = output_dir / f'{filename_prefix}_t{i:03d}.png'
