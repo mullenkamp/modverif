@@ -630,7 +630,7 @@ def plot_storm_composite(
                 mslp = _apply_lon_mask(_read_var_2d(ds, mslp_var, t), lon_mask)
 
             time_str = str(t_val)
-            frame_path = output_dir / f'{filename_prefix}_t{t:03d}.png'
+            frame_path = output_dir / f'{filename_prefix}_{np.datetime_as_string(t_val, unit="h")}.png'
 
             _plot_storm_composite_frame(
                 x2d, y2d, vimf_u, vimf_v, pwat, mslp,
@@ -1071,7 +1071,7 @@ def plot_storm_composite_comparison(
                 mslp_b = _apply_lon_mask(_read_var_2d(ds_b, mslp_var_b, idx_b), lon_mask_b)
 
             time_str = str(t_val)
-            frame_path = output_dir / f'{filename_prefix}_t{i:03d}.png'
+            frame_path = output_dir / f'{filename_prefix}_{np.datetime_as_string(t_val, unit="h")}.png'
 
             _plot_storm_composite_comparison_frame(
                 x2d_a, y2d_a, vimf_u_a, vimf_v_a, pwat_a, mslp_a,
