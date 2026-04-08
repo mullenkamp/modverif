@@ -15,6 +15,8 @@ import pyproj
 
 from modverif.cyclone import _read_latlon_2d, _read_var_2d, _read_slp_from_cfdb
 
+_UNSET = object()
+
 try:
     import cartopy.crs as ccrs
     import cartopy.feature as cfeature
@@ -513,7 +515,7 @@ def plot_storm_composite(
     cfdb_path: Union[str, pathlib.Path],
     output_dir: Union[str, pathlib.Path],
     filename_prefix: str = 'storm_composite',
-    webp_path: Union[str, pathlib.Path] = None,
+    webp_path: Union[str, pathlib.Path, None] = _UNSET,
     webp_duration: int = 500,
     webp_loop: int = 0,
     webp_quality: int = 80,
@@ -570,9 +572,9 @@ def plot_storm_composite(
     output_dir = pathlib.Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if webp_path is None:
+    if webp_path is _UNSET:
         webp_path = output_dir / f'{filename_prefix}.webp'
-    else:
+    elif webp_path is not None:
         webp_path = pathlib.Path(webp_path)
 
     if not cfdb_path.exists():
@@ -641,7 +643,8 @@ def plot_storm_composite(
             png_files.append(frame_path)
 
     # Assemble animated WebP
-    _assemble_webp(png_files, webp_path, webp_duration, webp_loop, webp_quality)
+    if webp_path is not None:
+        _assemble_webp(png_files, webp_path, webp_duration, webp_loop, webp_quality)
 
     return png_files, webp_path
 
@@ -940,7 +943,7 @@ def plot_storm_composite_comparison(
     filename_prefix: str = 'storm_composite_comparison',
     label_a: str = 'Model A',
     label_b: str = 'Model B',
-    webp_path: Union[str, pathlib.Path] = None,
+    webp_path: Union[str, pathlib.Path, None] = _UNSET,
     webp_duration: int = 500,
     webp_loop: int = 0,
     webp_quality: int = 80,
@@ -1008,9 +1011,9 @@ def plot_storm_composite_comparison(
     output_dir = pathlib.Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if webp_path is None:
+    if webp_path is _UNSET:
         webp_path = output_dir / f'{filename_prefix}.webp'
-    else:
+    elif webp_path is not None:
         webp_path = pathlib.Path(webp_path)
 
     if not cfdb_path_a.exists():
@@ -1085,7 +1088,8 @@ def plot_storm_composite_comparison(
             png_files.append(frame_path)
 
     # Assemble animated WebP
-    _assemble_webp(png_files, webp_path, webp_duration, webp_loop, webp_quality)
+    if webp_path is not None:
+        _assemble_webp(png_files, webp_path, webp_duration, webp_loop, webp_quality)
 
     return png_files, webp_path
 
