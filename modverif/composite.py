@@ -501,6 +501,13 @@ def plot_storm_composite_timestep(
         else:
             mslp = _apply_lon_mask(_read_var_2d(ds, mslp_var, time_index), lon_mask)
 
+        # Mask all fields where PWAT has no data (fill values)
+        fill_mask = np.isnan(pwat)
+        if np.any(fill_mask):
+            vimf_u = np.where(fill_mask, np.nan, vimf_u)
+            vimf_v = np.where(fill_mask, np.nan, vimf_v)
+            mslp = np.where(fill_mask, np.nan, mslp)
+
         time_str = str(time_values[time_index])
 
     return _plot_storm_composite_frame(
@@ -630,6 +637,13 @@ def plot_storm_composite(
                 mslp = _apply_lon_mask(_read_slp_from_cfdb(ds, t), lon_mask)
             else:
                 mslp = _apply_lon_mask(_read_var_2d(ds, mslp_var, t), lon_mask)
+
+            # Mask all fields where PWAT has no data (fill values)
+            fill_mask = np.isnan(pwat)
+            if np.any(fill_mask):
+                vimf_u = np.where(fill_mask, np.nan, vimf_u)
+                vimf_v = np.where(fill_mask, np.nan, vimf_v)
+                mslp = np.where(fill_mask, np.nan, mslp)
 
             time_str = str(t_val)
             frame_path = output_dir / f'{filename_prefix}_{np.datetime_as_string(t_val, unit="h")}.png'
@@ -913,6 +927,11 @@ def plot_storm_composite_comparison_timestep(
             mslp_a = _apply_lon_mask(_read_slp_from_cfdb(ds_a, idx_a), lon_mask_a)
         else:
             mslp_a = _apply_lon_mask(_read_var_2d(ds_a, mslp_var_a, idx_a), lon_mask_a)
+        fill_mask_a = np.isnan(pwat_a)
+        if np.any(fill_mask_a):
+            vimf_u_a = np.where(fill_mask_a, np.nan, vimf_u_a)
+            vimf_v_a = np.where(fill_mask_a, np.nan, vimf_v_a)
+            mslp_a = np.where(fill_mask_a, np.nan, mslp_a)
 
         # Read fields from dataset B
         vimf_u_b = _apply_lon_mask(_read_var_2d(ds_b, vimf_u_var_b, idx_b), lon_mask_b)
@@ -922,6 +941,11 @@ def plot_storm_composite_comparison_timestep(
             mslp_b = _apply_lon_mask(_read_slp_from_cfdb(ds_b, idx_b), lon_mask_b)
         else:
             mslp_b = _apply_lon_mask(_read_var_2d(ds_b, mslp_var_b, idx_b), lon_mask_b)
+        fill_mask_b = np.isnan(pwat_b)
+        if np.any(fill_mask_b):
+            vimf_u_b = np.where(fill_mask_b, np.nan, vimf_u_b)
+            vimf_v_b = np.where(fill_mask_b, np.nan, vimf_v_b)
+            mslp_b = np.where(fill_mask_b, np.nan, mslp_b)
 
         time_str = str(t_val)
 
@@ -1063,6 +1087,11 @@ def plot_storm_composite_comparison(
                 mslp_a = _apply_lon_mask(_read_slp_from_cfdb(ds_a, idx_a), lon_mask_a)
             else:
                 mslp_a = _apply_lon_mask(_read_var_2d(ds_a, mslp_var_a, idx_a), lon_mask_a)
+            fill_mask_a = np.isnan(pwat_a)
+            if np.any(fill_mask_a):
+                vimf_u_a = np.where(fill_mask_a, np.nan, vimf_u_a)
+                vimf_v_a = np.where(fill_mask_a, np.nan, vimf_v_a)
+                mslp_a = np.where(fill_mask_a, np.nan, mslp_a)
 
             # Read fields from dataset B
             vimf_u_b = _apply_lon_mask(_read_var_2d(ds_b, vimf_u_var_b, idx_b), lon_mask_b)
@@ -1072,6 +1101,11 @@ def plot_storm_composite_comparison(
                 mslp_b = _apply_lon_mask(_read_slp_from_cfdb(ds_b, idx_b), lon_mask_b)
             else:
                 mslp_b = _apply_lon_mask(_read_var_2d(ds_b, mslp_var_b, idx_b), lon_mask_b)
+            fill_mask_b = np.isnan(pwat_b)
+            if np.any(fill_mask_b):
+                vimf_u_b = np.where(fill_mask_b, np.nan, vimf_u_b)
+                vimf_v_b = np.where(fill_mask_b, np.nan, vimf_v_b)
+                mslp_b = np.where(fill_mask_b, np.nan, mslp_b)
 
             time_str = str(t_val)
             frame_path = output_dir / f'{filename_prefix}_{np.datetime_as_string(t_val, unit="h")}.png'
