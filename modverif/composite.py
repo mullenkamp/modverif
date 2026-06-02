@@ -13,9 +13,34 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pyproj
 
-from modverif.cyclone import _read_latlon_2d, _read_var_2d, _read_slp_from_cfdb
+from modverif.cyclone import (
+    _read_latlon_2d,
+    _read_slp_block_from_cfdb,
+    _read_slp_from_cfdb,
+    _read_var_2d,
+    _read_var_3d_time_slice,
+)
 
 _UNSET = object()
+
+# Physical-range fill thresholds. Real values are O(1e5) Pa for mslp and
+# O(1e3) kg/m/s for VIMF; anything well above these (e.g. ~2.1e8 from a
+# decoded int fill value) means the cfdb chunk was never properly written.
+_MSLP_FILL_ABS = 200_000.0
+_VIMF_FILL_ABS = 100_000.0
+
+
+def _storm_field_fill_mask(pwat, mslp, vimf_u, vimf_v):
+    """Return a 2D mask of cells that are NaN or out-of-range fill values."""
+    return (
+        np.isnan(pwat)
+        | np.isnan(mslp)
+        | np.isnan(vimf_u)
+        | np.isnan(vimf_v)
+        | (np.abs(mslp) > _MSLP_FILL_ABS)
+        | (np.abs(vimf_u) > _VIMF_FILL_ABS)
+        | (np.abs(vimf_v) > _VIMF_FILL_ABS)
+    )
 
 try:
     import cartopy.crs as ccrs
@@ -501,9 +526,10 @@ def plot_storm_composite_timestep(
         else:
             mslp = _apply_lon_mask(_read_var_2d(ds, mslp_var, time_index), lon_mask)
 
-        # Mask all fields where PWAT has no data (fill values)
-        fill_mask = np.isnan(pwat)
+        # Mask cells where any field is NaN or holds an out-of-range fill value
+        fill_mask = _storm_field_fill_mask(pwat, mslp, vimf_u, vimf_v)
         if np.any(fill_mask):
+            pwat = np.where(fill_mask, np.nan, pwat)
             vimf_u = np.where(fill_mask, np.nan, vimf_u)
             vimf_v = np.where(fill_mask, np.nan, vimf_v)
             mslp = np.where(fill_mask, np.nan, mslp)
@@ -594,62 +620,74 @@ def plot_storm_composite(
         time_values = ds['time'].data
         n_times = len(time_values)
 
-        # Determine time range
+        # Determine matching time range (contiguous, since time_values is monotonic ascending)
         if start_time is not None:
             start_time = np.datetime64(start_time)
         if end_time is not None:
             end_time = np.datetime64(end_time)
 
+        match = np.ones(n_times, dtype=bool)
+        if start_time is not None:
+            match &= time_values >= start_time
+        if end_time is not None:
+            match &= time_values <= end_time
+        matching_idx = np.where(match)[0]
+        if matching_idx.size == 0:
+            return png_files, webp_path
+        t_lo = int(matching_idx[0])
+        t_hi = int(matching_idx[-1]) + 1
+        t_slice = slice(t_lo, t_hi)
+
+        # Bulk-read each field as a single (n_t, ny, nx) block to avoid
+        # re-decompressing the same multi-timestep cfdb chunk per frame.
+        pwat_block = _read_var_3d_time_slice(ds, pwat_var, t_slice)
+        vimf_u_block = _read_var_3d_time_slice(ds, vimf_u_var, t_slice)
+        vimf_v_block = _read_var_3d_time_slice(ds, vimf_v_var, t_slice)
+
+        if mslp_var == 'mslp':
+            mslp_block = _read_slp_block_from_cfdb(ds, t_slice)
+        else:
+            mslp_block = _read_var_3d_time_slice(ds, mslp_var, t_slice)
+
+        if lon_mask is not None:
+            pwat_block = pwat_block[:, :, lon_mask]
+            vimf_u_block = vimf_u_block[:, :, lon_mask]
+            vimf_v_block = vimf_v_block[:, :, lon_mask]
+            mslp_block = mslp_block[:, :, lon_mask]
+
+        # Mask cells where any field is NaN or holds an out-of-range fill value,
+        # across the whole block, so pwat_levels reflect only valid data.
+        full_mask = _storm_field_fill_mask(pwat_block, mslp_block, vimf_u_block, vimf_v_block)
+        if np.any(full_mask):
+            pwat_block = np.where(full_mask, np.nan, pwat_block)
+            vimf_u_block = np.where(full_mask, np.nan, vimf_u_block)
+            vimf_v_block = np.where(full_mask, np.nan, vimf_v_block)
+            mslp_block = np.where(full_mask, np.nan, mslp_block)
+
         # Compute consistent PWAT levels across all frames if not provided
         if 'pwat_levels' not in plot_kwargs or plot_kwargs.get('pwat_levels') is None:
-            global_min = np.inf
-            global_max = -np.inf
-            for t in range(n_times):
-                t_val = time_values[t]
-                if start_time is not None and t_val < start_time:
-                    continue
-                if end_time is not None and t_val > end_time:
-                    continue
-                pwat_t = _read_var_2d(ds, pwat_var, t)
-                global_min = min(global_min, np.nanmin(pwat_t))
-                global_max = max(global_max, np.nanmax(pwat_t))
-            pmin = max(0, np.floor(global_min))
-            pmax = np.ceil(global_max)
+            if np.any(np.isfinite(pwat_block)):
+                pmin = max(0.0, float(np.floor(np.nanmin(pwat_block))))
+                pmax = float(np.ceil(np.nanmax(pwat_block)))
+            else:
+                pmin, pmax = 0.0, 0.0
             if pmax > pmin:
                 plot_kwargs['pwat_levels'] = np.linspace(pmin, pmax, 15)
             else:
                 plot_kwargs['pwat_levels'] = np.linspace(0, 80, 17)
 
-        for t in range(n_times):
+        for t in matching_idx:
+            t = int(t)
             t_val = time_values[t]
-
-            if start_time is not None and t_val < start_time:
-                continue
-            if end_time is not None and t_val > end_time:
-                continue
-
-            # Read fields
-            vimf_u = _apply_lon_mask(_read_var_2d(ds, vimf_u_var, t), lon_mask)
-            vimf_v = _apply_lon_mask(_read_var_2d(ds, vimf_v_var, t), lon_mask)
-            pwat = _apply_lon_mask(_read_var_2d(ds, pwat_var, t), lon_mask)
-
-            if mslp_var == 'mslp':
-                mslp = _apply_lon_mask(_read_slp_from_cfdb(ds, t), lon_mask)
-            else:
-                mslp = _apply_lon_mask(_read_var_2d(ds, mslp_var, t), lon_mask)
-
-            # Mask all fields where PWAT has no data (fill values)
-            fill_mask = np.isnan(pwat)
-            if np.any(fill_mask):
-                vimf_u = np.where(fill_mask, np.nan, vimf_u)
-                vimf_v = np.where(fill_mask, np.nan, vimf_v)
-                mslp = np.where(fill_mask, np.nan, mslp)
+            local_i = t - t_lo
 
             time_str = str(t_val)
             frame_path = output_dir / f'{filename_prefix}_{np.datetime_as_string(t_val, unit="h")}.png'
 
             _plot_storm_composite_frame(
-                x2d, y2d, vimf_u, vimf_v, pwat, mslp,
+                x2d, y2d,
+                vimf_u_block[local_i], vimf_v_block[local_i],
+                pwat_block[local_i], mslp_block[local_i],
                 data_crs=data_crs, is_projected=is_projected,
                 time_str=time_str, output_path=frame_path,
                 **plot_kwargs,

@@ -89,6 +89,25 @@ def _read_var_2d(ds, var_name, time_idx, height_idx=0):
         raise ValueError(f"Variable '{var_name}' has {n_dims} dimensions, expected 2-4")
 
 
+def _read_var_3d_time_slice(ds, var_name, t_slice, height_idx=0):
+    """
+    Read a (n_t, ny, nx) block from a cfdb variable across a time slice.
+
+    Bulk equivalent of ``_read_var_2d`` covering a contiguous time range in
+    one cfdb call. Used to avoid re-decompressing the same multi-timestep
+    chunk for every frame in a plot loop.
+    """
+    var = ds[var_name]
+    n_dims = len(var.shape)
+    if n_dims == 4:
+        data = var[(t_slice, height_idx, slice(None), slice(None))].data
+        return data[:, 0]
+    elif n_dims == 3:
+        return var[(t_slice, slice(None), slice(None))].data
+    else:
+        raise ValueError(f"Variable '{var_name}' has {n_dims} dimensions, expected 3-4 for time-slice reads")
+
+
 def _read_latlon_2d(ds):
     """
     Read 2D latitude and longitude arrays from a cfdb dataset.
@@ -170,6 +189,32 @@ def _read_slp_from_cfdb(ds, time_idx, smoothing_sigma=None):
         slp = gaussian_filter(slp.astype(np.float64), sigma=smoothing_sigma).astype(slp.dtype)
 
     return slp
+
+
+def _read_slp_block_from_cfdb(ds, t_slice):
+    """
+    Bulk-read or compute SLP for a time slice. Returns a (n_t, ny, nx) block in Pa.
+
+    Mirrors ``_read_slp_from_cfdb`` but reads each underlying variable as a single
+    slab to avoid per-timestep chunk decompression.
+    """
+    all_vars = set(ds.coord_names) | set(ds.data_var_names)
+
+    if 'mslp' in all_vars:
+        return _read_var_3d_time_slice(ds, 'mslp', t_slice)
+
+    required = {'surface_pressure', 'terrain_height', 'air_temperature'}
+    missing = required - all_vars
+    if missing:
+        raise ValueError(
+            f"Dataset does not contain 'mslp' and is missing variables "
+            f"needed to compute SLP: {missing}"
+        )
+    psfc = _read_var_3d_time_slice(ds, 'surface_pressure', t_slice)
+    hgt = _read_var_3d_time_slice(ds, 'terrain_height', t_slice)
+    t2 = _read_var_3d_time_slice(ds, 'air_temperature', t_slice)
+    q2 = _read_var_3d_time_slice(ds, 'mixing_ratio', t_slice) if 'mixing_ratio' in all_vars else None
+    return _compute_sea_level_pressure(psfc, hgt, t2, q2)
 
 
 @dataclass
