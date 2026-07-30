@@ -11,8 +11,10 @@ from dataclasses import dataclass
 from typing import Union
 
 import cfdb
+import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
+import pyproj
 from scipy.ndimage import gaussian_filter
 
 try:
@@ -108,13 +110,28 @@ def _read_var_3d_time_slice(ds, var_name, t_slice, height_idx=0):
         raise ValueError(f"Variable '{var_name}' has {n_dims} dimensions, expected 3-4 for time-slice reads")
 
 
-def _read_latlon_2d(ds):
+def read_latlon_2d(ds):
     """
     Read 2D latitude and longitude arrays from a cfdb dataset.
 
-    Handles two cases:
-    - 1D coordinates (``latitude``/``longitude``): creates 2D meshgrid
-    - 2D data variables (``latitude``/``longitude``): reads directly
+    Handles three layouts, tried in this order:
+
+    - 1D coordinates (``latitude``/``longitude``): creates a 2D meshgrid
+    - 2D/3D/4D data variables (``latitude``/``longitude``): reads directly
+    - **projected grids** (``y``/``x`` coordinates plus a CRS): transforms the native
+      coordinates to geographic with pyproj
+
+    The projected case is why this exists as public API. Model output on a Lambert
+    conformal or polar stereographic grid -- which is what WRF writes -- carries ``y``/``x``
+    and a CRS rather than latitude and longitude, and every cyclone routine here needs
+    geographic coordinates because the distance maths is haversine-based.
+
+    Longitude convention
+    --------------------
+    The projected branch returns pyproj's ``[-180, 180)`` convention, while the coordinate
+    and data-variable branches return whatever the dataset stores -- reanalysis grids are
+    commonly ``0-360``. A caller comparing positions **across two datasets** must normalise;
+    the haversine maths itself is periodic and needs no help.
 
     Returns
     -------
@@ -147,11 +164,16 @@ def _read_latlon_2d(ds):
         else:
             raise ValueError(f"latitude variable has {n_dims} dimensions, expected 2-4")
         return xlat, xlong
+    elif 'y' in coord_names and 'x' in coord_names and ds.crs is not None:
+        transformer = pyproj.Transformer.from_crs(ds.crs, 'EPSG:4326', always_xy=True)
+        xx, yy = np.meshgrid(ds['x'].data, ds['y'].data)
+        xlong, xlat = transformer.transform(xx, yy)
+        return np.asarray(xlat), np.asarray(xlong)
     else:
         raise ValueError(
-            "Dataset must contain 'latitude' and 'longitude' as either "
-            f"coordinates or data variables. Found coords={ds.coord_names}, "
-            f"data_vars={ds.data_var_names}"
+            "Dataset must contain 'latitude' and 'longitude' as either coordinates or "
+            "data variables, or 'y'/'x' coordinates with a CRS. Found "
+            f"coords={ds.coord_names}, data_vars={ds.data_var_names}, crs={ds.crs}"
         )
 
 
@@ -231,7 +253,7 @@ class CyclonePosition:
     time_str: str = None
 
 
-def _haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """
     Calculate the great-circle distance between two points in kilometers.
 
@@ -417,6 +439,20 @@ def _estimate_cyclone_radius(
     return float(radius)
 
 
+def _select_time_indices(time_values, start_time, end_time):
+    """Indices of the timesteps inside an inclusive ``[start_time, end_time]`` window.
+
+    Either bound may be None, meaning open-ended on that side. Returns the full range when
+    both are None, so the windowed and un-windowed paths are the same code.
+    """
+    mask = np.ones(len(time_values), dtype=bool)
+    if start_time is not None:
+        mask &= time_values >= np.datetime64(start_time)
+    if end_time is not None:
+        mask &= time_values <= np.datetime64(end_time)
+    return np.where(mask)[0]
+
+
 def track_cyclone(
     cfdb_path: Union[str, pathlib.Path],
     start_lat: float = None,
@@ -425,6 +461,8 @@ def track_cyclone(
     pressure_threshold_pa: float = 400.0,
     max_cyclone_radius_km: float = 1000.0,
     smoothing_sigma: float = None,
+    start_time=None,
+    end_time=None,
 ) -> list[CyclonePosition]:
     """
     Track a cyclone through time using sea level pressure minima.
@@ -458,18 +496,36 @@ def track_cyclone(
         Standard deviation for Gaussian smoothing of the SLP field.
         Higher values produce more smoothing. If None (default), no smoothing
         is applied. Typical values range from 1 to 5 grid cells.
+    start_time, end_time : datetime64-like, optional
+        Restrict tracking to an inclusive time window. Either may be given alone.
+        With no window (the default) every timestep is tracked, as before.
+
+        ``CyclonePosition.time_index`` remains the **absolute** index into the dataset's
+        time axis, not the position within the window, because ``plot_cyclone_timestep``
+        re-reads the field by that index.
+
+        When ``start_lat``/``start_lon`` are not given, the initial global pressure search
+        happens on the first timestep **inside the window**, not at index 0.
 
     Returns
     -------
     list[CyclonePosition]
-        List of CyclonePosition objects, one per timestep.
+        List of CyclonePosition objects, one per tracked timestep.
 
     Raises
     ------
     FileNotFoundError
         If the cfdb dataset does not exist.
     ValueError
-        If required variables are not found.
+        If required variables are not found, or the window selects no timesteps.
+
+    Notes
+    -----
+    A window is deliberately **not** plumbed through ``track_cyclone_multi_file``. That
+    function offsets each file's indices by ``len(all_positions)`` while
+    ``plot_cyclone_track_multi_file`` maps them back using each file's ``n_times``; the two
+    agree only because an un-windowed track returns exactly one position per timestep. A
+    windowed per-file track would break both at once.
 
     Examples
     --------
@@ -490,20 +546,28 @@ def track_cyclone(
     positions = []
 
     with cfdb.open_dataset(cfdb_path) as ds:
-        xlat, xlong = _read_latlon_2d(ds)
+        xlat, xlong = read_latlon_2d(ds)
         time_values = ds['time'].data
-        n_times = len(time_values)
+
+        time_indices = _select_time_indices(time_values, start_time, end_time)
+        if len(time_indices) == 0:
+            raise ValueError(
+                f"No timesteps in [{start_time}, {end_time}] for {cfdb_path}. "
+                f"Dataset covers {time_values[0]} .. {time_values[-1]}."
+            )
 
         # Initialize search position
         current_lat = start_lat
         current_lon = start_lon
 
-        for t in range(n_times):
+        for step, t_idx in enumerate(time_indices):
+            # np.where yields np.int64; cfdb indexing wants a plain int
+            t = int(t_idx)
             slp = _read_slp_from_cfdb(ds, t, smoothing_sigma=smoothing_sigma)
 
             # Find pressure minimum
-            if t == 0 and current_lat is None:
-                # First timestep without start position: global search
+            if step == 0 and current_lat is None:
+                # First timestep in the window without a start position: global search
                 y_idx, x_idx, min_pressure = _find_pressure_minimum(slp, xlat, xlong)
             else:
                 # Search within radius of current position
@@ -623,6 +687,255 @@ def track_cyclone_multi_file(
     return all_positions
 
 
+def _parse_time_str(s):
+    """Parse the ``time_str`` a CyclonePosition carries (``str(np.datetime64)``)."""
+    return np.datetime64(s)
+
+
+def match_cyclone_positions(
+    positions_a: list[CyclonePosition],
+    positions_b: list[CyclonePosition],
+    tolerance_min: int = 90,
+) -> list[tuple[CyclonePosition, CyclonePosition, float]]:
+    """
+    Pair each position in ``positions_a`` with the nearest-in-time position in ``positions_b``.
+
+    Nearest-timestamp matching within a tolerance, rather than requiring identical
+    timestamps, because two datasets covering the same storm rarely share an output
+    cadence -- a 3-hourly model run and hourly reanalysis have no exact matches at all.
+    (``evaluate.evaluate_cyclones`` takes the other approach and intersects exact
+    timestamps; pick whichever suits the pair of datasets in hand.)
+
+    Positions in ``positions_a`` with no partner inside the tolerance are simply absent
+    from the result, so the pair count is a diagnostic worth reporting.
+
+    Parameters
+    ----------
+    positions_a, positions_b : list[CyclonePosition]
+        Tracks to pair, typically from two ``track_cyclone`` calls over the same window.
+    tolerance_min : int
+        Maximum timestamp separation for a pair, in minutes. Default 90.
+
+    Returns
+    -------
+    list[tuple[CyclonePosition, CyclonePosition, float]]
+        ``(position_a, position_b, separation_km)`` per matched pair, in the order of
+        ``positions_a``. Separation is the great-circle distance between centres.
+    """
+    if not positions_a or not positions_b:
+        return []
+
+    times_b = np.array([_parse_time_str(p.time_str) for p in positions_b])
+    tol = np.timedelta64(tolerance_min, 'm')
+
+    pairs = []
+    for pa in positions_a:
+        ta = _parse_time_str(pa.time_str)
+        diffs = np.abs(times_b - ta)
+        j = int(np.argmin(diffs))
+        if diffs[j] <= tol:
+            pb = positions_b[j]
+            sep = haversine_distance(pa.latitude, pa.longitude, pb.latitude, pb.longitude)
+            pairs.append((pa, pb, float(sep)))
+    return pairs
+
+
+def compare_cyclone_tracks(
+    positions_a: list[CyclonePosition],
+    positions_b: list[CyclonePosition],
+    tolerance_min: int = 90,
+) -> tuple[list[tuple[CyclonePosition, CyclonePosition, float]], dict]:
+    """
+    Compare two independently tracked cyclones: depth, timing and track separation.
+
+    Each track is compared **at its own minimum** rather than at a fixed coordinate or a
+    fixed time, which is what separates "the model under-deepens the storm" from "the model
+    has the storm in slightly the wrong place, and a fixed-grid comparison smears it".
+
+    Parameters
+    ----------
+    positions_a, positions_b : list[CyclonePosition]
+        Tracks to compare. Sign conventions below are all *a minus b*.
+    tolerance_min : int
+        Timestamp matching tolerance in minutes, passed to ``match_cyclone_positions``.
+
+    Returns
+    -------
+    tuple[list, dict]
+        ``(pairs, metrics)``. ``pairs`` is the output of ``match_cyclone_positions``;
+        ``metrics`` has keys:
+
+        ``min_slp_bias_hpa``
+            ``min(SLP_a) - min(SLP_b)`` in hPa. Positive means *a* is shallower.
+        ``a_min_hpa``, ``b_min_hpa``, ``a_min_time``, ``b_min_time``
+            The deepest point of each track and when it occurred.
+        ``timing_offset_h``
+            ``t(a_min) - t(b_min)`` in hours. Positive means *a* lags.
+        ``mean_track_sep_km``, ``max_track_sep_km``
+            Centre-to-centre distance over matched timesteps; ``None`` if nothing matched.
+        ``n_matched_timesteps``, ``n_a_steps``, ``n_b_steps``
+            Counts, so a thin match is visible rather than implied.
+
+    Raises
+    ------
+    ValueError
+        If either track is empty -- there is no minimum to compare.
+    """
+    if not positions_a or not positions_b:
+        raise ValueError(
+            f"Both tracks must be non-empty to compare "
+            f"(got {len(positions_a)} and {len(positions_b)} positions)"
+        )
+
+    pairs = match_cyclone_positions(positions_a, positions_b, tolerance_min=tolerance_min)
+
+    a_min = min(positions_a, key=lambda p: p.central_pressure)
+    b_min = min(positions_b, key=lambda p: p.central_pressure)
+    min_slp_bias_hpa = (a_min.central_pressure - b_min.central_pressure) / 100.0
+    timing_offset_h = float(
+        (_parse_time_str(a_min.time_str) - _parse_time_str(b_min.time_str)) / np.timedelta64(1, 'h')
+    )
+    seps = np.array([sep for _, _, sep in pairs]) if pairs else np.array([])
+
+    metrics = {
+        'min_slp_bias_hpa': float(min_slp_bias_hpa),
+        'a_min_hpa': float(a_min.central_pressure) / 100.0,
+        'b_min_hpa': float(b_min.central_pressure) / 100.0,
+        'a_min_time': a_min.time_str,
+        'b_min_time': b_min.time_str,
+        'timing_offset_h': timing_offset_h,
+        'mean_track_sep_km': float(seps.mean()) if seps.size else None,
+        'max_track_sep_km': float(seps.max()) if seps.size else None,
+        'n_matched_timesteps': int(seps.size),
+        'n_a_steps': len(positions_a),
+        'n_b_steps': len(positions_b),
+    }
+    return pairs, metrics
+
+
+def plot_cyclone_comparison(
+    output_path: Union[str, pathlib.Path],
+    positions_a: list[CyclonePosition],
+    positions_b: list[CyclonePosition],
+    pairs: list,
+    metrics: dict,
+    start_position: tuple[float, float] = None,
+    label_a: str = 'A',
+    label_b: str = 'B',
+    title: str = None,
+    figsize: tuple[float, float] = (10, 12),
+    dpi: int = 120,
+):
+    """
+    Three-panel comparison of two cyclone tracks: SLP series, tracks, and separation.
+
+    Parameters
+    ----------
+    output_path : str or pathlib.Path
+        Where to write the PNG.
+    positions_a, positions_b : list[CyclonePosition]
+        The two tracks, as passed to ``compare_cyclone_tracks``.
+    pairs, metrics : list, dict
+        The two return values of ``compare_cyclone_tracks``.
+    start_position : tuple[float, float], optional
+        ``(lat, lon)`` of the shared search seed, marked on the track panel.
+    label_a, label_b : str
+        Legend names for the two tracks.
+    title : str, optional
+        Figure suptitle.
+    figsize, dpi : tuple, int
+        Passed to matplotlib.
+
+    Notes
+    -----
+    Longitudes are normalised to 0-360 before plotting. Two datasets tracked over the same
+    storm may use different conventions -- a projected grid derives ``[-180, 180)`` via
+    pyproj while a reanalysis grid commonly stores ``0-360`` -- and without normalising, one
+    track lands on the far side of the axis.
+    """
+    output_path = pathlib.Path(output_path)
+
+    def to_360(lon):
+        return lon % 360
+
+    t_a = np.array([_parse_time_str(p.time_str) for p in positions_a])
+    t_b = np.array([_parse_time_str(p.time_str) for p in positions_b])
+    slp_a = np.array([p.central_pressure / 100 for p in positions_a])
+    slp_b = np.array([p.central_pressure / 100 for p in positions_b])
+    lat_a = np.array([p.latitude for p in positions_a])
+    lon_a = to_360(np.array([p.longitude for p in positions_a]))
+    lat_b = np.array([p.latitude for p in positions_b])
+    lon_b = to_360(np.array([p.longitude for p in positions_b]))
+
+    pair_t = np.array([_parse_time_str(pa.time_str) for pa, _, _ in pairs])
+    pair_sep = np.array([sep for _, _, sep in pairs])
+
+    fig, axes = plt.subplots(3, 1, figsize=figsize)
+
+    # Panel 1: central SLP through time
+    ax = axes[0]
+    ax.plot(t_b, slp_b, 'o-', color='C0', ms=3, lw=1.2, label=label_b)
+    ax.plot(t_a, slp_a, 's-', color='C3', ms=3, lw=1.2, label=label_a)
+    ax.set_ylabel('Central SLP (hPa)')
+    ax.set_title('Per-storm SLP (each tracked independently)')
+    ax.grid(alpha=0.3)
+    ax.legend(loc='upper right')
+    ax.invert_yaxis()  # deeper = lower
+    ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+    ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(ax.xaxis.get_major_locator()))
+    ax.annotate(
+        f"min: {label_b}={metrics['b_min_hpa']:.1f}  {label_a}={metrics['a_min_hpa']:.1f}  "
+        f"Δ={metrics['min_slp_bias_hpa']:+.1f} hPa  |  timing Δ={metrics['timing_offset_h']:+.1f} h",
+        xy=(0.02, 0.04), xycoords='axes fraction', fontsize=9, family='monospace',
+        bbox=dict(boxstyle='round', facecolor='white', alpha=0.85),
+    )
+
+    # Panel 2: tracks on the lat/lon plane
+    ax = axes[1]
+    ax.plot(lon_b, lat_b, 'o-', color='C0', ms=4, lw=1.0, label=f'{label_b} track')
+    ax.plot(lon_a, lat_a, 's-', color='C3', ms=4, lw=1.0, label=f'{label_a} track')
+    if start_position is not None:
+        ax.plot(to_360(start_position[1]), start_position[0], 'k*', ms=14, label='start search', zorder=5)
+    a_min_idx = int(np.argmin(slp_a))
+    b_min_idx = int(np.argmin(slp_b))
+    ax.plot(lon_a[a_min_idx], lat_a[a_min_idx], '^', color='C3', ms=12,
+            markeredgecolor='black', label=f'{label_a} minimum')
+    ax.plot(lon_b[b_min_idx], lat_b[b_min_idx], 'v', color='C0', ms=12,
+            markeredgecolor='black', label=f'{label_b} minimum')
+    ax.set_xlabel('Longitude (°E, 0-360)')
+    ax.set_ylabel('Latitude (°N)')
+    ax.set_title('Storm tracks')
+    ax.grid(alpha=0.3)
+    ax.legend(loc='best', fontsize=8)
+    ax.set_aspect('equal', adjustable='datalim')
+
+    # Panel 3: per-step centre separation
+    ax = axes[2]
+    if pair_t.size:
+        ax.plot(pair_t, pair_sep, 'o-', color='C2', ms=4, lw=1.2)
+        if metrics['mean_track_sep_km'] is not None:
+            ax.axhline(metrics['mean_track_sep_km'], color='C2', ls='--', alpha=0.6,
+                       label=f"mean = {metrics['mean_track_sep_km']:.0f} km")
+            ax.legend(loc='best')
+    else:
+        ax.text(0.5, 0.5, 'no matched timesteps', ha='center', va='center', transform=ax.transAxes)
+    ax.set_ylabel('Separation (km)')
+    ax.set_xlabel('Time')
+    ax.set_title(f"{label_a}↔{label_b} center-to-center distance per matched timestep "
+                 f"(n={metrics['n_matched_timesteps']})")
+    ax.grid(alpha=0.3)
+    ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+    ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(ax.xaxis.get_major_locator()))
+
+    if title:
+        fig.suptitle(title, fontsize=11)
+    fig.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=dpi)
+    plt.close(fig)
+    return output_path
+
+
 def positions_to_array(positions: list[CyclonePosition]) -> np.ndarray:
     """
     Convert list of CyclonePosition to a structured numpy array.
@@ -720,6 +1033,18 @@ def plot_cyclone_timestep(
         Colormap for filled contours. Default is 'RdYlBu_r'.
     title : str, optional
         Custom title. If None, auto-generated from position data.
+
+    Raises
+    ------
+    NotImplementedError
+        For projected (``y``/``x`` + CRS) datasets. ``read_latlon_2d`` can now derive
+        geographic coordinates for those, but this function cannot yet *plot* them: it
+        wraps longitudes to 0-360 and hands 2D curvilinear coordinates to a PlateCarree
+        axis, which produces contour artefacts across the map, and ``set_extent`` then
+        clips the frame at 180 -- silently dropping any part of the domain east of the
+        antimeridian, cyclone centre included. Doing this properly means plotting native
+        ``y``/``x`` through the dataset's CRS, as ``composite.py`` does. Until then, fail
+        loudly rather than emit a wrong map.
     """
     output_path = pathlib.Path(output_path)
 
@@ -728,7 +1053,13 @@ def plot_cyclone_timestep(
 
     with cfdb.open_dataset(cfdb_path) as ds:
         t = position.time_index
-        xlat, xlong = _read_latlon_2d(ds)
+        if 'y' in set(ds.coord_names) and 'x' in set(ds.coord_names) and ds.crs is not None:
+            raise NotImplementedError(
+                f"plot_cyclone_timestep does not support projected grids yet ({cfdb_path} has "
+                f"y/x coordinates and a CRS). Tracking works -- see read_latlon_2d -- but the "
+                f"plotting path assumes geographic coordinates on a PlateCarree axis."
+            )
+        xlat, xlong = read_latlon_2d(ds)
 
         # Wrap longitudes to -180 to 180 range
         xlong = np.where(xlong < 0, xlong + 360, xlong)

@@ -14,8 +14,8 @@ from modverif.cyclone import (
     _estimate_cyclone_radius,
     _find_pressure_minimum,
     _grid_distances_km,
-    _haversine_distance,
-    _read_latlon_2d,
+    haversine_distance,
+    read_latlon_2d,
     _read_slp_from_cfdb,
     _read_var_2d,
 )
@@ -189,8 +189,8 @@ def evaluate_cyclones(
             raise ValueError(f"Unknown metric '{m}'. Available: {AVAILABLE_DOMAIN_METRICS}")
 
     with cfdb.open_dataset(source) as ds_s, cfdb.open_dataset(test) as ds_t:
-        xlat_s, xlong_s = _read_latlon_2d(ds_s)
-        xlat_t, xlong_t = _read_latlon_2d(ds_t)
+        xlat_s, xlong_s = read_latlon_2d(ds_s)
+        xlat_t, xlong_t = read_latlon_2d(ds_t)
 
         s_time = ds_s['time'].data
         t_time = ds_t['time'].data
@@ -310,7 +310,7 @@ def evaluate_cyclones(
 
         # Track difference variables
         pos_diff = np.array([
-            _haversine_distance(
+            haversine_distance(
                 source_positions[t].latitude, source_positions[t].longitude,
                 test_positions[t].latitude, test_positions[t].longitude
             ) for t in range(n_times)

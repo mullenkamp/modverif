@@ -165,7 +165,7 @@ Cartopy's `LambertConformal` projection has a `cutoff` parameter (default `-30`)
 
 This is a common issue for Southern Hemisphere WRF domains. For example, a domain centred on New Zealand at 34°S with an outer domain extending to 15°S will have its northern portion clipped.
 
-modverif handles this automatically by setting `cutoff=30` for SH projections in `_pyproj_to_cartopy`. If you create your own cartopy axes for a SH Lambert Conformal domain, remember to pass an appropriate cutoff:
+modverif handles this automatically by setting `cutoff=30` for SH projections in `pyproj_to_cartopy`. If you create your own cartopy axes for a SH Lambert Conformal domain, remember to pass an appropriate cutoff:
 
 ```python
 import cartopy.crs as ccrs

@@ -126,7 +126,7 @@ modverif uses [cartopy](https://scitools.org.uk/cartopy/) for geographic map pro
 
 Cartopy's `LambertConformal` projection has a `cutoff` parameter (default `-30`) that silently limits how far the map extends from the projection centre. For Northern Hemisphere projections this is fine, but for Southern Hemisphere domains the default boundary sits at 30 S. Any data north of 30 S is simply not displayed -- no error, no warning.
 
-modverif sets `cutoff=30` for SH projections automatically (`_pyproj_to_cartopy` in `composite.py`), but if you create your own cartopy axes for a SH Lambert Conformal domain, remember to pass an appropriate cutoff:
+modverif sets `cutoff=30` for SH projections automatically (`pyproj_to_cartopy` in `composite.py`), but if you create your own cartopy axes for a SH Lambert Conformal domain, remember to pass an appropriate cutoff:
 
 ```python
 import cartopy.crs as ccrs

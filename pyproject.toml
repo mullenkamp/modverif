@@ -77,7 +77,7 @@ dependencies = [
   "ruff>=0.0.243",
 ]
 [tool.hatch.envs.lint.scripts]
-typing = "mypy --install-types --non-interactive {args:src/modverif tests}"
+typing = "mypy --install-types --non-interactive {args:modverif}"
 style = [
   "ruff {args:.}",
   "black --check --diff {args:.}",
@@ -93,8 +93,8 @@ all = [
 ]
 
 [tool.hatch.envs.default.scripts]
-test = "pytest {args:tests}"
-test-cov = "coverage run -m pytest {args:tests}"
+test = "pytest {args:modverif/tests}"
+test-cov = "coverage run -m pytest {args:modverif/tests}"
 cov-report = [
   "- coverage combine",
   "coverage report",

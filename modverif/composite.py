@@ -14,7 +14,7 @@ import numpy as np
 import pyproj
 
 from modverif.cyclone import (
-    _read_latlon_2d,
+    read_latlon_2d,
     _read_slp_block_from_cfdb,
     _read_slp_from_cfdb,
     _read_var_2d,
@@ -51,12 +51,21 @@ except ImportError:
     HAS_CARTOPY = False
 
 
-def _pyproj_to_cartopy(crs):
+def pyproj_to_cartopy(crs):
     """
     Convert a pyproj CRS to a cartopy CRS projection.
 
     Supports Lambert Conformal Conic, Polar Stereographic, Mercator,
-    and geographic (lat/lon) projections.
+    and geographic (lat/lon) projections; anything else falls back to PlateCarree.
+
+    For Southern Hemisphere Lambert Conformal domains the cutoff is flipped to ``+30``,
+    because cartopy's default of ``-30`` clips the domain at 30 degrees south.
+
+    Returns
+    -------
+    cartopy.crs.CRS or None
+        ``None`` when cartopy is not installed -- callers are expected to fall back to
+        an unprojected plot rather than fail.
     """
     if not HAS_CARTOPY:
         return None
@@ -115,7 +124,7 @@ def _read_grid_from_ds(ds):
     var_names = set(ds.data_var_names)
 
     if 'latitude' in coord_names or 'latitude' in var_names:
-        xlat, xlong = _read_latlon_2d(ds)
+        xlat, xlong = read_latlon_2d(ds)
         # Discard columns past the antimeridian to avoid cartopy wrapping issues
         lon_mask = None
         if xlong.ndim == 2 and np.any(xlong > 180):
@@ -421,7 +430,7 @@ def _plot_storm_composite_frame(
     # Set up cartopy projections
     if HAS_CARTOPY:
         if is_projected and data_crs is not None:
-            map_projection = _pyproj_to_cartopy(data_crs)
+            map_projection = pyproj_to_cartopy(data_crs)
             data_transform = map_projection
         else:
             map_projection = ccrs.PlateCarree()
@@ -813,14 +822,14 @@ def _plot_storm_composite_comparison_frame(
     # Set up projections for each panel
     if HAS_CARTOPY:
         if is_projected_a and data_crs_a is not None:
-            proj_a = _pyproj_to_cartopy(data_crs_a)
+            proj_a = pyproj_to_cartopy(data_crs_a)
             transform_a = proj_a
         else:
             proj_a = ccrs.PlateCarree()
             transform_a = ccrs.PlateCarree()
 
         if is_projected_b and data_crs_b is not None:
-            proj_b = _pyproj_to_cartopy(data_crs_b)
+            proj_b = pyproj_to_cartopy(data_crs_b)
             transform_b = proj_b
         else:
             proj_b = ccrs.PlateCarree()
