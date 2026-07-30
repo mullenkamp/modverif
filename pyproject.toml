@@ -11,10 +11,15 @@ classifiers = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-  'cfdb',
+  # Floor, not a pin: modverif is a library and should not pin its consumers. But it must not be
+  # unbounded either -- while `cfdb` was undeclared, CI resolved to PyPI latest (0.9.5) while both
+  # consumers hard-pinned 0.8.5, so the suite was green against a version nobody actually ran.
+  # 0.9.5 is the floor because 0.9.x changed indexing semantics, int-packed fillvalue handling and
+  # calendar-anchored groupby -- a consumer on 0.8.x is not running the code this is tested against.
+  'cfdb>=0.9.5',
   'pyproj',
   'h5py',
-  'rechunkit>=0.2.1',
+  'rechunkit>=0.6.0',
   'numpy>2',
   'matplotlib',
   'cartopy',
