@@ -20,6 +20,7 @@ the origin is a cheap test of which behaves better (see :func:`fit_bias_variogra
    ``numpy.random.Generator``.
 """
 import numpy as np
+from scipy.cluster.vq import kmeans2
 from scipy.optimize import curve_fit
 from scipy.spatial.distance import pdist
 
@@ -335,3 +336,187 @@ def bootstrap_variogram_params(
 
     return {'rng': band(ranges), 'nugget': band(nuggets), 'drop_frac': drop_frac,
             'n_ok': len(ranges)}
+
+
+# ---------------------------------------------------------------------------- spatial autocorrelation
+def morans_i(zc: np.ndarray, weights: np.ndarray, s0: float, n: int, denom: float) -> float:
+    """
+    Moran's I for a pre-centred field under a given weight matrix.
+
+    Takes ``s0``, ``n`` and ``denom`` as arguments rather than deriving them because callers evaluate
+    many weight matrices, or many permutations, against the same field -- recomputing the invariants
+    each time is the dominant cost.
+
+    Parameters
+    ----------
+    zc : np.ndarray
+        Field with its mean already removed.
+    weights : np.ndarray
+        ``(n, n)`` spatial weight matrix, zero on the diagonal.
+    s0 : float
+        Sum of ``weights``.
+    n : int
+        Number of locations.
+    denom : float
+        ``zc @ zc``, the field's total squared deviation.
+
+    Returns
+    -------
+    float
+        Moran's I. Its null expectation is ``-1 / (n - 1)``, **not zero** -- a small positive value
+        can still be below chance.
+    """
+    return (n / s0) * float(zc @ (weights @ zc)) / denom
+
+
+def morans_i_permutation(
+    zc: np.ndarray,
+    weight_mats,
+    n: int,
+    denom: float,
+    rng: np.random.Generator,
+    n_perm: int = 999,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Permutation null for Moran's I across one or more weight matrices.
+
+    .. warning::
+       **One shuffle is evaluated against every weight matrix, by design.** Testing each matrix with
+       its own independent permutations would draw ``n_perm x len(weight_mats)`` times instead of
+       ``n_perm``, and -- more importantly -- would destroy the correlation *between* the bands'
+       nulls. A correlogram's bands are not independent tests of independent quantities; they are one
+       field viewed at several scales, and a multiple-comparison correction applied across
+       independently-generated nulls is answering a different question from the one asked.
+
+       This is why the function takes a *list* of weight matrices rather than being called once per
+       matrix. Refactoring it into a per-matrix helper changes both the draw count and the result.
+
+    Parameters
+    ----------
+    zc : np.ndarray
+        Field with its mean already removed.
+    weight_mats : sequence of (np.ndarray, float)
+        ``(weights, s0)`` pairs -- e.g. one per distance band of a correlogram, or a single entry for
+        a global statistic.
+    n : int
+        Number of locations.
+    denom : float
+        ``zc @ zc``.
+    rng : np.random.Generator
+        Caller's generator. Consumed once per permutation, in order.
+    n_perm : int
+        Number of permutations.
+
+    Returns
+    -------
+    observed : np.ndarray
+        Moran's I per weight matrix on the real data.
+    null : np.ndarray
+        ``(n_perm, len(weight_mats))`` null statistics.
+    """
+    observed = np.array([morans_i(zc, w, s0, n, denom) for w, s0 in weight_mats])
+    null = np.empty((n_perm, len(weight_mats)))
+    for p in range(n_perm):
+        zp = zc[rng.permutation(n)]
+        for j, (w, s0) in enumerate(weight_mats):
+            null[p, j] = morans_i(zp, w, s0, n, denom)
+    return observed, null
+
+
+# ------------------------------------------------------------------------------------ regionalisation
+def best_kmeans(xy: np.ndarray, k: int, rng: np.random.Generator, n_restart: int = 20):
+    """
+    k-means on point coordinates, keeping the lowest-inertia labelling over several restarts.
+
+    k-means converges to a local optimum that depends on initialisation, so a single run is a coin
+    toss dressed as an answer. Restarts make the labelling reproducible in practice rather than only
+    in principle.
+
+    .. note::
+       The restart seeds are drawn in **one vectorised call**. Replacing that with per-restart scalar
+       draws consumes the caller's generator differently and changes every downstream result.
+
+    Parameters
+    ----------
+    xy : np.ndarray
+        ``(n, 2)`` coordinates, in a projected metric CRS.
+    k : int
+        Number of clusters.
+    rng : np.random.Generator
+        Caller's generator, used only to seed the restarts.
+    n_restart : int
+        Restarts to attempt.
+
+    Returns
+    -------
+    np.ndarray or None
+        Cluster label per point, or **None** if every restart collapsed to fewer than ``k`` non-empty
+        clusters -- which is the honest answer for a k the point set cannot support, and callers must
+        handle it rather than assume an array.
+    """
+    best_lab, best_inertia = None, np.inf
+    for s in rng.integers(0, 2**31 - 1, size=n_restart):
+        try:
+            cen, lab = kmeans2(xy, k, minit='++', seed=int(s), missing='raise')
+        except Exception:  # noqa: S112 -- a failed restart is expected; the next seed may succeed
+            continue
+        if len(np.unique(lab)) < k:
+            # Belt-and-braces, and measured as such: with missing='raise' scipy raises on an empty
+            # cluster rather than returning a short labelling, so this branch did not fire once in
+            # 800 attempts across degenerate inputs (identical points, duplicate locations, k > the
+            # number of distinct sites). Kept because it is the guard that would matter if that
+            # kwarg ever changed -- but do not spend effort trying to cover it with a test.
+            continue
+        inertia = float(np.sum((xy - cen[lab]) ** 2))
+        if inertia < best_inertia:
+            best_lab, best_inertia = lab, inertia
+    return best_lab
+
+
+def loo_cluster_pred(z: np.ndarray, labels: np.ndarray) -> np.ndarray:
+    """
+    Leave-one-out prediction from cluster means.
+
+    Each point is predicted from its own cluster's mean computed **without it**. Including the point
+    in its own predictor is the standard way to make a regionalisation look skilful when it is
+    merely descriptive.
+
+    Parameters
+    ----------
+    z : np.ndarray
+        Field values.
+    labels : np.ndarray
+        Cluster label per point.
+
+    Returns
+    -------
+    np.ndarray
+        Prediction per point. A singleton cluster falls back to the leave-one-out **global** mean,
+        since a cluster of one carries no information about itself.
+    """
+    n = len(z)
+    pred = np.empty(n)
+    for i in range(n):
+        same = (labels == labels[i])
+        same[i] = False
+        pred[i] = z[same].mean() if same.any() else z[np.arange(n) != i].mean()
+    return pred
+
+
+def loo_global_mean(z: np.ndarray) -> np.ndarray:
+    """
+    Leave-one-out global mean -- the aspatial baseline any regionalisation must beat.
+
+    Parameters
+    ----------
+    z : np.ndarray
+        Field values.
+
+    Returns
+    -------
+    np.ndarray
+        Mean of all other points, per point.
+    """
+    n = len(z)
+    tot = z.sum()
+    return (tot - z) / (n - 1)

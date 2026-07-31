@@ -281,6 +281,43 @@ def compute_ane_1d(
     return abs(compute_ne_1d(model, obs, epsilon))
 
 
+def compute_residual_skill_score(resid: np.ndarray, resid_base: np.ndarray) -> float:
+    """
+    Skill of one set of residuals against a baseline's, as a fraction of RMSE removed.
+
+    ``1 - rmse(resid) / rmse(resid_base)``. Positive means the model beat the baseline; zero means it
+    matched it; negative means the baseline was better, which is the outcome worth reporting rather
+    than hiding.
+
+    Two things to note before comparing this with a number from elsewhere:
+
+    * It takes **residuals**, not ``(model, obs)`` pairs, unlike the rest of this module. The
+      baseline is often something with no per-point prediction to subtract -- a leave-one-out mean,
+      a climatology -- so residuals are the only common currency.
+    * It is an **RMSE** ratio, not the more common MSE-ratio skill score (MSESS). The two are not
+      interchangeable: an MSE ratio of 0.5 is an RMSE ratio of about 0.29.
+
+    Parameters
+    ----------
+    resid : np.ndarray
+        Residuals of the method under test.
+    resid_base : np.ndarray
+        Residuals of the reference method.
+
+    Returns
+    -------
+    float
+        Skill score, or NaN if the baseline has zero RMSE (nothing to improve on).
+    """
+    def _rmse(a):
+        # Strict mean, not nanmean: a NaN here means the caller's residuals are wrong, and it should
+        # surface as NaN rather than be silently dropped from the denominator.
+        return float(np.sqrt(np.mean(np.asarray(a) ** 2)))
+
+    rb = _rmse(resid_base)
+    return (1.0 - _rmse(resid) / rb) if rb > 0 else np.nan
+
+
 def compute_lagged_correlation(
     model: np.ndarray,
     obs: np.ndarray,

@@ -21,13 +21,18 @@ from modverif.spatial import (
     MAX_LAG_PCT,
     MIN_PAIRS_PER_BIN,
     NEAR_ORIGIN_KM,
+    best_kmeans,
     bootstrap_variogram_params,
     ch_gamma,
     empirical_variogram,
     exponential_variogram,
     fit_bias_variogram,
     fit_exponential_variogram,
+    loo_cluster_pred,
+    loo_global_mean,
     matheron_gamma,
+    morans_i,
+    morans_i_permutation,
 )
 
 
@@ -244,3 +249,143 @@ def _pairs(x, y, z):
     """Condensed pairwise distances and absolute differences, as fit_bias_variogram builds them."""
     from scipy.spatial.distance import pdist
     return pdist(np.column_stack([x, y])), pdist(np.asarray(z, float)[:, None])
+
+
+# =============================================================== spatial autocorrelation + regions
+class _PermutationCounter:
+    """Delegates to a real Generator while counting permutation() calls."""
+
+    def __init__(self, seed):
+        self._g = np.random.default_rng(seed)
+        self.n_permutation = 0
+        self.n_integers = 0
+
+    def permutation(self, *a, **kw):
+        self.n_permutation += 1
+        return self._g.permutation(*a, **kw)
+
+    def integers(self, *a, **kw):
+        self.n_integers += 1
+        return self._g.integers(*a, **kw)
+
+
+def _weights_from_coords(xy):
+    d = np.hypot(xy[:, 0][:, None] - xy[:, 0][None, :], xy[:, 1][:, None] - xy[:, 1][None, :])
+    w = np.where(d > 0, 1.0 / np.where(d > 0, d, 1.0), 0.0)
+    np.fill_diagonal(w, 0.0)
+    return w, float(w.sum())
+
+
+def test_morans_i_is_positive_for_a_clustered_field_and_negative_for_a_checkerboard():
+    side = 8
+    yy, xx = np.mgrid[0:side, 0:side]
+    xy = np.column_stack([xx.ravel().astype(float), yy.ravel().astype(float)])
+    w, s0 = _weights_from_coords(xy)
+    n = len(xy)
+
+    checker = ((xx + yy) % 2).ravel().astype(float)
+    zc = checker - checker.mean()
+    assert morans_i(zc, w, s0, n, float(zc @ zc)) < 0, 'a checkerboard is anti-correlated'
+
+    clustered = (xx < side / 2).ravel().astype(float)
+    zc2 = clustered - clustered.mean()
+    assert morans_i(zc2, w, s0, n, float(zc2 @ zc2)) > 0, 'a split field is positively correlated'
+
+
+def test_morans_i_permutation_draws_once_per_permutation_not_once_per_weight_matrix():
+    """The load-bearing property: ONE shuffle is evaluated against EVERY weight matrix.
+
+    Testing each matrix with its own permutations would draw ``n_perm x n_matrices`` times and
+    produce independent nulls -- a different statistical question, and a different answer from any
+    multiple-comparison correction applied on top.
+    """
+    gen = np.random.default_rng(3)
+    xy = gen.uniform(0, 100, (40, 2))
+    z = gen.normal(size=40)
+    zc = z - z.mean()
+    n, denom = 40, float(zc @ zc)
+    w, s0 = _weights_from_coords(xy)
+    mats = [(w, s0), (np.ones((n, n)) - np.eye(n), float(n * (n - 1))), (w, s0)]
+
+    spy = _PermutationCounter(5)
+    observed, null = morans_i_permutation(zc, mats, n, denom, spy, n_perm=50)
+
+    assert spy.n_permutation == 50, (
+        f'expected one shuffle per permutation, got {spy.n_permutation} for {len(mats)} matrices')
+    assert null.shape == (50, 3)
+    np.testing.assert_array_equal(null[:, 0], null[:, 2],
+                                  err_msg='identical weight matrices must see the SAME shuffle')
+    assert observed[0] == observed[2]
+
+
+def test_shared_shuffle_couples_the_nulls_where_independent_shuffles_would_not():
+    """The statistical consequence of sharing the shuffle, stated as a comparison rather than a
+    threshold.
+
+    Bands of a correlogram are one field viewed at several scales, not independent tests. Sharing the
+    shuffle preserves that coupling in the null; drawing per-band permutations destroys it, and a
+    family-wise correction applied to independently-generated nulls answers a different question.
+
+    Asserting "shared is more coupled than independent" is the actual claim. An absolute correlation
+    threshold would just be a number tuned until the test passed.
+    """
+    gen = np.random.default_rng(4)
+    xy = gen.uniform(0, 100, (50, 2))
+    z = gen.normal(size=50)
+    zc = z - z.mean()
+    n, denom, n_perm = 50, float(zc @ zc), 400
+    w, s0 = _weights_from_coords(xy)
+    near = (np.hypot(xy[:, 0][:, None] - xy[:, 0][None, :],
+                     xy[:, 1][:, None] - xy[:, 1][None, :]) < 30).astype(float)
+    np.fill_diagonal(near, 0.0)
+    mats = [(w, s0), (near, float(near.sum()))]
+
+    _, shared = morans_i_permutation(zc, mats, n, denom, np.random.default_rng(6), n_perm=n_perm)
+    r_shared = abs(np.corrcoef(shared[:, 0], shared[:, 1])[0, 1])
+
+    # The same two matrices, but each with its own independent permutations.
+    g = np.random.default_rng(6)
+    indep = np.column_stack([morans_i_permutation(zc, [m], n, denom, g, n_perm=n_perm)[1][:, 0]
+                             for m in mats])
+    r_indep = abs(np.corrcoef(indep[:, 0], indep[:, 1])[0, 1])
+
+    assert r_shared > r_indep, (
+        f'sharing the shuffle should couple the nulls: shared r={r_shared:.3f} vs '
+        f'independent r={r_indep:.3f}')
+
+
+def test_best_kmeans_declines_when_k_cannot_be_supported():
+    """Returns None rather than an array -- callers must handle it, so it is pinned."""
+    xy = np.zeros((5, 2))                     # every point identical
+    assert best_kmeans(xy, 4, np.random.default_rng(0)) is None
+
+
+def test_best_kmeans_recovers_obvious_clusters():
+    gen = np.random.default_rng(7)
+    xy = np.vstack([gen.normal((0, 0), 0.4, (40, 2)), gen.normal((30, 30), 0.4, (40, 2))])
+    lab = best_kmeans(xy, 2, np.random.default_rng(1))
+    assert lab is not None
+    assert len(np.unique(lab)) == 2
+    assert len(np.unique(lab[:40])) == 1 and len(np.unique(lab[40:])) == 1
+
+
+def test_best_kmeans_draws_its_restart_seeds_in_one_vectorised_call():
+    """Per-restart scalar draws would consume the caller's generator differently."""
+    gen = np.random.default_rng(8)
+    xy = gen.uniform(0, 50, (40, 2))
+    spy = _PermutationCounter(2)
+    best_kmeans(xy, 3, spy, n_restart=20)
+    assert spy.n_integers == 1, f'expected a single vectorised integers() call, got {spy.n_integers}'
+
+
+def test_loo_cluster_pred_excludes_the_point_itself():
+    z = np.array([1.0, 3.0, 5.0, 100.0])
+    labels = np.array([0, 0, 0, 1])
+    pred = loo_cluster_pred(z, labels)
+    assert pred[0] == pytest.approx(4.0), 'point 0 must be predicted from points 1 and 2 only'
+    assert pred[3] == pytest.approx(3.0), 'a singleton falls back to the leave-one-out global mean'
+
+
+def test_loo_global_mean_is_the_mean_of_the_others():
+    z = np.array([1.0, 2.0, 3.0, 4.0])
+    np.testing.assert_allclose(loo_global_mean(z), [3.0, 8 / 3, 7 / 3, 2.0])
