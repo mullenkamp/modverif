@@ -12,7 +12,7 @@ modverif evaluates model output by comparing gridded datasets or comparing model
 |------|-------|-------------|
 | Grid-to-Grid | `Evaluator` | Compare two gridded datasets cell-by-cell or domain-aggregated. Supports FSS, wind vectors, and diurnal analysis. |
 | Grid-to-Point | `StationEvaluator` | Compare gridded model output to weather station observations with automatic interpolation and height matching. |
-| Cyclone | `CycloneEvaluator` | Track cyclones independently in two datasets and compare track, pressure, and radius differences. |
+| Cyclone | `track_cyclone` + `compare_cyclone_tracks` | Track cyclones independently in two datasets and compare depth, timing and track separation. `evaluate_cyclones` additionally computes per-variable metrics inside the cyclone region. |
 
 ## Key Features
 
@@ -21,7 +21,8 @@ modverif evaluates model output by comparing gridded datasets or comparing model
 - **Vector wind evaluation** -- Vector RMSE, speed bias, direction bias from U/V components
 - **Diurnal cycle analysis** -- metrics grouped by hour-of-day with UTC offset support
 - **Station evaluation** -- automatic grid-to-point interpolation, per-station and aggregate metrics, lagged correlation
-- **Cyclone tracking** -- SLP-based tracking with radius estimation and per-variable evaluation within cyclone region
+- **Cyclone tracking** -- SLP-based tracking with radius estimation, an optional time window, and support for projected (`y`/`x` + CRS) model grids
+- **Cyclone comparison** -- pressure bias, timing offset and track separation between two independently tracked storms, plus per-variable evaluation within the cyclone region
 - **Storm composite plots** -- PWAT/MSLP/VIMF overlays with side-by-side model comparison and animated WebP output
 - **Verification plots** -- scatter, station map, time series, performance diagram, Taylor diagram, FSS, wind rose
 - **Spatial and temporal filtering** -- bounding box, boolean mask, start/end time

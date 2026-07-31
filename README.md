@@ -44,8 +44,9 @@ Compare gridded model output to weather station observations:
 
 Track cyclones independently in two datasets and compare:
 
-- Cyclone tracking via SLP pressure minimum
-- Track position, pressure, and radius differences
+- Cyclone tracking via SLP pressure minimum, over an optional time window
+- Works on projected model grids (`y`/`x` + CRS), not just lat/lon
+- Depth bias, timing offset and track separation, each track compared at its own minimum
 - Per-variable metrics within the cyclone region
 
 ### Verification Plots
