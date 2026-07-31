@@ -98,7 +98,7 @@ def plot_scatter(
         ax.text(
             0.05, 0.95, stats_text, transform=ax.transAxes,
             fontsize=9, verticalalignment='top',
-            bbox=dict(boxstyle='round', facecolor='white', alpha=0.8),
+            bbox={'boxstyle': 'round', 'facecolor': 'white', 'alpha': 0.8},
         )
 
     fig.tight_layout()
@@ -329,7 +329,9 @@ def plot_performance_diagram(
 
     # Plot experiment points
     colors = plt.cm.Set1(np.linspace(0, 1, max(len(pod_values), 2)))
-    for i, (pod, far) in enumerate(zip(pod_values, far_values)):
+    # strict=True: pod_values and far_values are caller-supplied per-experiment lists. A length
+    # mismatch is a caller bug, and silently plotting only the shorter one hides it.
+    for i, (pod, far) in enumerate(zip(pod_values, far_values, strict=True)):
         sr = 1.0 - far
         label = labels[i] if labels else f'Exp {i + 1}'
         ax.scatter(sr, pod, c=[colors[i]], s=100, zorder=5, edgecolors='black', linewidth=0.5, label=label)
@@ -423,12 +425,14 @@ def plot_taylor_diagram(
                 if r1 >= 0:
                     r_crmse.append((th, r1))
         if r_crmse:
-            ths, rs = zip(*r_crmse)
+            ths, rs = zip(*r_crmse, strict=True)
             ax.plot(ths, rs, 'g--', linewidth=0.3, alpha=0.5)
 
     # Plot model points
     colors = plt.cm.Set1(np.linspace(0, 1, max(len(std_model), 2)))
-    for i, (std_m, corr) in enumerate(zip(std_model, correlations)):
+    # strict=True: same reasoning as the performance diagram -- these are caller-supplied
+    # per-model lists, and a mismatch should surface rather than silently drop models.
+    for i, (std_m, corr) in enumerate(zip(std_model, correlations, strict=True)):
         theta = np.arccos(np.clip(corr, -1, 1))
         label = labels[i] if labels else f'Model {i + 1}'
         ax.scatter(theta, std_m, c=[colors[i]], s=100, zorder=5, edgecolors='black', linewidth=0.5, label=label)
@@ -590,7 +594,7 @@ def plot_lagged_correlation(
         0.95, 0.05,
         f'Optimal lag: {lags[best_idx]}\nPeak r: {peak_corr:.3f}',
         transform=ax.transAxes, fontsize=9, ha='right',
-        bbox=dict(boxstyle='round', facecolor='white', alpha=0.8),
+        bbox={'boxstyle': 'round', 'facecolor': 'white', 'alpha': 0.8},
     )
 
     if correlations.ndim == 2:
@@ -640,7 +644,7 @@ def plot_fss(
 
     if multi_times:
         colors = plt.cm.viridis(np.linspace(0, 1, len(multi_times)))
-        for (label, vals), color in zip(multi_times.items(), colors):
+        for (label, vals), color in zip(multi_times.items(), colors, strict=True):
             ax.plot(neighborhood_sizes, vals, '-o', color=color, label=label, markersize=4)
     else:
         ax.plot(neighborhood_sizes, fss_values, '-o', color='steelblue', linewidth=2, markersize=6)

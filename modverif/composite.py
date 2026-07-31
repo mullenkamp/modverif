@@ -11,14 +11,13 @@ from typing import Union
 import cfdb
 import matplotlib.pyplot as plt
 import numpy as np
-import pyproj
 
 from modverif.cyclone import (
-    read_latlon_2d,
     _read_slp_block_from_cfdb,
     _read_slp_from_cfdb,
     _read_var_2d,
     _read_var_3d_time_slice,
+    read_latlon_2d,
 )
 
 _UNSET = object()
@@ -1113,7 +1112,7 @@ def plot_storm_composite_comparison(
         if 'pwat_levels' not in plot_kwargs or plot_kwargs.get('pwat_levels') is None:
             global_min = np.inf
             global_max = -np.inf
-            for t_val, idx_a, idx_b in matched:
+            for _t_val, idx_a, idx_b in matched:
                 pwat_t_a = _read_var_2d(ds_a, pwat_var_a, idx_a)
                 pwat_t_b = _read_var_2d(ds_b, pwat_var_b, idx_b)
                 global_min = min(global_min, np.nanmin(pwat_t_a), np.nanmin(pwat_t_b))
@@ -1125,7 +1124,7 @@ def plot_storm_composite_comparison(
             else:
                 plot_kwargs['pwat_levels'] = np.linspace(0, 80, 17)
 
-        for i, (t_val, idx_a, idx_b) in enumerate(matched):
+        for _i, (t_val, idx_a, idx_b) in enumerate(matched):
             # Read fields from dataset A
             vimf_u_a = _apply_lon_mask(_read_var_2d(ds_a, vimf_u_var_a, idx_a), lon_mask_a)
             vimf_v_a = _apply_lon_mask(_read_var_2d(ds_a, vimf_v_var_a, idx_a), lon_mask_a)

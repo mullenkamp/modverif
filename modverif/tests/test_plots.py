@@ -3,20 +3,20 @@ Tests for modverif.plots module.
 
 Smoke tests that verify figures are created with correct structure.
 """
+import matplotlib as mpl
 import numpy as np
-import pytest
-import matplotlib
-matplotlib.use('Agg')  # Non-interactive backend for testing
+
+mpl.use('Agg')  # Non-interactive backend for testing
 
 from modverif.plots import (
-    plot_lagged_correlation,
-    plot_scatter,
-    plot_station_map,
-    plot_timeseries,
-    plot_performance_diagram,
-    plot_taylor_diagram,
     plot_diurnal,
     plot_fss,
+    plot_lagged_correlation,
+    plot_performance_diagram,
+    plot_scatter,
+    plot_station_map,
+    plot_taylor_diagram,
+    plot_timeseries,
     plot_wind_rose_comparison,
 )
 

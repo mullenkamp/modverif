@@ -887,7 +887,7 @@ def plot_cyclone_comparison(
         f"min: {label_b}={metrics['b_min_hpa']:.1f}  {label_a}={metrics['a_min_hpa']:.1f}  "
         f"Δ={metrics['min_slp_bias_hpa']:+.1f} hPa  |  timing Δ={metrics['timing_offset_h']:+.1f} h",
         xy=(0.02, 0.04), xycoords='axes fraction', fontsize=9, family='monospace',
-        bbox=dict(boxstyle='round', facecolor='white', alpha=0.85),
+        bbox={'boxstyle': 'round', 'facecolor': 'white', 'alpha': 0.85},
     )
 
     # Panel 2: tracks on the lat/lon plane

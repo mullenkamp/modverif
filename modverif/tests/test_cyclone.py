@@ -8,10 +8,11 @@ not exist -- or actively raised -- before.
 Synthetic data throughout: a Gaussian pressure low walked along a prescribed track, so the
 correct answer is known by construction rather than by comparison with a previous run.
 """
+import matplotlib as mpl
 import numpy as np
 import pytest
-import matplotlib
-matplotlib.use('Agg')
+
+mpl.use('Agg')
 
 import cfdb
 import pyproj
@@ -268,11 +269,14 @@ class TestTrackCycloneWindow:
         selection with a different starting position.
         """
         path = _create_latlon_cfdb(tmp_path / 'latlon.cfdb')
-        kwargs = dict(start_lat=-40.0, start_lon=165.0, search_radius_km=600.0)
+        kwargs = {'start_lat': -40.0, 'start_lon': 165.0, 'search_radius_km': 600.0}
         full = track_cyclone(path, **kwargs)
         windowed = track_cyclone(path, end_time=START_TIME + np.timedelta64(3, 'h'), **kwargs)
         assert len(windowed) == 4
-        for w, f in zip(windowed, full):
+        # strict=False is deliberate here, unlike everywhere else in the package: the windowed
+        # track is compared against the *prefix* of the longer full track, so truncation is the
+        # intent. The length assertion above is what stops that hiding a short result.
+        for w, f in zip(windowed, full, strict=False):
             assert (w.time_index, w.y_index, w.x_index) == (f.time_index, f.y_index, f.x_index)
             assert w.latitude == f.latitude and w.longitude == f.longitude
             assert w.central_pressure == f.central_pressure

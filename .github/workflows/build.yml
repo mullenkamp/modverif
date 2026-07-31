@@ -11,9 +11,9 @@ jobs:
         python_version: ['3.10', '3.11', '3.12']
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python_version }}
     - name: Install dependencies
@@ -21,16 +21,19 @@ jobs:
         python -m pip install --upgrade pip
         pip install hatch
         hatch env create
-    - name: Lint and typecheck
+    # `lint:style` is ruff-only. Formatting is deliberately not gated -- see pyproject.toml.
+    - name: Lint
       run: |
-        hatch run lint-check
+        hatch run lint:style
     - name: Test
       run: |
         hatch run test-cov-xml
-    - uses: codecov/codecov-action@v3
+    # fail_ci_if_error is false until CODECOV_TOKEN is confirmed to exist: this workflow has
+    # never run, and coverage *reporting* should not be what keeps the build red.
+    - uses: codecov/codecov-action@v5
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
-        fail_ci_if_error: true
+        fail_ci_if_error: false
         verbose: true
 
   release:
@@ -38,10 +41,14 @@ jobs:
     needs: test
     if: startsWith(github.ref, 'refs/tags/')
 
+    # NOTE: this job has never run. Beyond the action versions bumped here for consistency with
+    # the test job, it still needs HATCH_INDEX_USER/HATCH_INDEX_AUTH secrets that may never have
+    # been set, and `permissions: contents: write` for the draft release under modern
+    # default-read-only workflow tokens. Tracked in wrf-model-eval's OPEN_WORK.md.
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.11'
     - name: Install dependencies

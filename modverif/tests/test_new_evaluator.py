@@ -1,7 +1,6 @@
 """
 Tests for new Evaluator methods: evaluate_fss, evaluate_wind, evaluate_diurnal, and pearson domain metric.
 """
-import pathlib
 
 import cfdb
 import numpy as np

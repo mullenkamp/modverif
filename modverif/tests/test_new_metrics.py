@@ -3,22 +3,23 @@ Tests for new metric functions added in modverif.metrics.
 """
 import numpy as np
 import pytest
+
 from modverif.metrics import (
-    compute_lagged_correlation,
-    compute_mae,
-    compute_mean_bias,
-    compute_mae_1d,
-    compute_rmse_1d,
-    compute_ne_1d,
     compute_ane_1d,
-    compute_pearson_domain,
+    compute_diurnal_stats,
     compute_fraction_field,
     compute_fss,
     compute_fss_multi_scale,
+    compute_lagged_correlation,
+    compute_mae,
+    compute_mae_1d,
+    compute_mean_bias,
+    compute_ne_1d,
+    compute_pearson_domain,
+    compute_rmse_1d,
     compute_vector_rmse,
-    compute_wind_speed_bias,
     compute_wind_direction_bias,
-    compute_diurnal_stats,
+    compute_wind_speed_bias,
 )
 
 

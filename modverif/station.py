@@ -5,7 +5,7 @@ Equivalent to MET's Point-Stat tool. Compares cfdb grid datasets to
 cfdb ts_ortho (time series orthogonal) station observation datasets.
 """
 import pathlib
-from typing import Union, List
+from typing import List, Union
 
 import cfdb
 import numpy as np

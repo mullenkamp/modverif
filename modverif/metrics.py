@@ -1,9 +1,10 @@
 """
 Standardized meteorological verification metrics.
 """
+from typing import Tuple
+
 import numpy as np
 from scipy.ndimage import uniform_filter
-from typing import Optional, Tuple
 
 ###################################################
 ### Parameters
@@ -687,12 +688,12 @@ class ContingencyTable:
         """Create a contingency table from forecast and observation data using a threshold."""
         source_yes = source_data >= threshold
         test_yes = test_data >= threshold
-        
+
         hits = np.sum(source_yes & test_yes)
         false_alarms = np.sum((~source_yes) & test_yes)
         misses = np.sum(source_yes & (~test_yes))
         correct_negatives = np.sum((~source_yes) & (~test_yes))
-        
+
         return cls(hits, false_alarms, misses, correct_negatives)
 
     def pod(self) -> float:
@@ -716,7 +717,10 @@ class ContingencyTable:
         GSS = (Hits - Hits_random) / (Hits + False Alarms + Misses - Hits_random)
         where Hits_random = (Hits + Misses) * (Hits + False Alarms) / Total
         """
-        hits_random = ((self.hits + self.misses) * (self.hits + self.false_alarms)) / self.total if self.total > 0 else 0
+        if self.total > 0:
+            hits_random = ((self.hits + self.misses) * (self.hits + self.false_alarms)) / self.total
+        else:
+            hits_random = 0
         num = self.hits - hits_random
         den = self.hits + self.false_alarms + self.misses - hits_random
         return num / den if den != 0 else np.nan
