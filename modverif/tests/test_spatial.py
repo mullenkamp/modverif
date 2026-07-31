@@ -12,7 +12,7 @@ Three of these defend design decisions rather than arithmetic, because those are
   shared generator through instead is the obvious tidy-up and it silently changes every result after
   the first.
 * ``test_fit_bias_variogram_returns_the_full_key_contract`` -- downstream code indexes these keys by
-  name, including the awkward ``'rng'`` (which means *range*).
+  name, including the awkward ``'range_km'`` (which means *range*).
 """
 import numpy as np
 import pytest
@@ -28,8 +28,6 @@ from modverif.spatial import (
     exponential_variogram,
     fit_bias_variogram,
     fit_exponential_variogram,
-    loo_cluster_pred,
-    loo_global_mean,
     matheron_gamma,
     morans_i,
     morans_i_permutation,
@@ -129,7 +127,7 @@ def test_fit_recovers_a_known_range():
     x, y, z = correlated_field(rng_km=60.0, seed=3)
     out = fit_bias_variogram(x, y, z)
     assert out['fit_ok']
-    assert 20.0 < out['rng'] < 180.0, f'range {out["rng"]:.1f} km is not in the plausible band'
+    assert 20.0 < out['range_km'] < 180.0, f'range {out["rng"]:.1f} km is not in the plausible band'
     assert out['sill'] == pytest.approx(out['nugget'] + out['psill'])
 
 
@@ -170,7 +168,7 @@ def test_fit_bias_variogram_returns_the_full_key_contract():
     x, y, z = correlated_field(seed=6)
     out = fit_bias_variogram(x, y, z)
     assert set(out) == {'centers', 'gammas', 'counts', 'max_lag', 'var_z', 'ch_n', 'mat_n',
-                        'n_near', 'fit_ok', 'nugget', 'psill', 'sill', 'rng', 'rel_nugget'}
+                        'n_near', 'fit_ok', 'nugget', 'psill', 'sill', 'range_km', 'rel_nugget'}
     assert out['n_near'] > 0, 'no near-origin pairs, so the nugget estimate is unanchored'
 
 
@@ -180,7 +178,7 @@ def test_fit_bias_variogram_reports_nan_parameters_when_the_fit_fails():
     x, y = gen.uniform(0, 5, 40), gen.uniform(0, 5, 40)
     out = fit_bias_variogram(x, y, np.zeros(40))     # zero variance -> no fit possible
     assert out['fit_ok'] is False
-    for k in ('nugget', 'psill', 'sill', 'rng', 'rel_nugget'):
+    for k in ('nugget', 'psill', 'sill', 'range_km', 'rel_nugget'):
         assert np.isnan(out[k]), f'{k} should be NaN when the fit failed'
 
 
@@ -238,7 +236,7 @@ def test_bootstrap_band_is_ordered_and_reports_its_sample_size():
     x, y, z = correlated_field(seed=12)
     out = bootstrap_variogram_params(x, y, z, n_boot=60)
     assert out is not None
-    for key in ('rng', 'nugget'):
+    for key in ('range_km', 'nugget'):
         lo, mid, hi = out[key]
         assert lo <= mid <= hi, f'{key} band is not ordered'
     assert out['n_ok'] >= 30
@@ -376,16 +374,3 @@ def test_best_kmeans_draws_its_restart_seeds_in_one_vectorised_call():
     spy = _PermutationCounter(2)
     best_kmeans(xy, 3, spy, n_restart=20)
     assert spy.n_integers == 1, f'expected a single vectorised integers() call, got {spy.n_integers}'
-
-
-def test_loo_cluster_pred_excludes_the_point_itself():
-    z = np.array([1.0, 3.0, 5.0, 100.0])
-    labels = np.array([0, 0, 0, 1])
-    pred = loo_cluster_pred(z, labels)
-    assert pred[0] == pytest.approx(4.0), 'point 0 must be predicted from points 1 and 2 only'
-    assert pred[3] == pytest.approx(3.0), 'a singleton falls back to the leave-one-out global mean'
-
-
-def test_loo_global_mean_is_the_mean_of_the_others():
-    z = np.array([1.0, 2.0, 3.0, 4.0])
-    np.testing.assert_allclose(loo_global_mean(z), [3.0, 8 / 3, 7 / 3, 2.0])

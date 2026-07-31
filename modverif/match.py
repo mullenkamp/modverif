@@ -1,23 +1,23 @@
 """
-Point-to-grid neighbourhood matching, and the selection-bias null that keeps it honest.
+Point-to-grid neighborhood matching, and the selection-bias null that keeps it honest.
 
 When a model is compared against point observations at the model's own nearest cell, a spatially
 displaced but otherwise correct forecast scores badly. Relaxing the comparison to "the best-matching
 cell within R" separates an *amplitude* error from a *placement* error -- but only if you also price
-what that search buys by luck, which is what :func:`null_improvement` is for.
+what that search buys by luck, which is what `null_improvement` is for.
 
-.. note::
-   **This is the point-based neighbourhood family. The grid-based one lives in**
-   :mod:`modverif.metrics` -- ``compute_fss``, ``compute_fraction_field``,
+**NOTE:**
+   **This is the point-based neighborhood family. The grid-based one lives in**
+   `modverif.metrics` -- ``compute_fss``, ``compute_fraction_field``,
    ``compute_fss_multi_scale``. The fractions skill score compares two *fields* by the fraction of
-   each neighbourhood exceeding a threshold; the functions here match *scattered points* against a
+   each neighborhood exceeding a threshold; the functions here match *scattered points* against a
    field by value. Related ideas, different inputs, different answers.
 
-.. warning::
-   **Searching a neighbourhood for the closest value is a biased estimator, always.** In a 3 km box
+**WARNING:**
+   **Searching a neighborhood for the closest value is a biased estimator, always.** In a 3 km box
    on a 1 km grid there are ~50 candidate cells, so a near-matching value exists almost regardless of
    whether the model has any real skill at that location. Any improvement from best-matching must be
-   compared against :func:`null_improvement` -- the same search re-run at deliberately wrong
+   compared against `null_improvement` -- the same search re-run at deliberately wrong
    locations -- or it means nothing. Reporting the improvement alone overstates the model.
 
 Coordinates are in a **projected, metric CRS**; radii are in the same units (metres). Boxes are
@@ -58,7 +58,7 @@ def nearest_indices(coords: np.ndarray, points: np.ndarray) -> np.ndarray:
                    0, len(coords) - 1)
 
 
-def neighbourhood_match(
+def neighborhood_match(
     field: np.ndarray,
     gx: np.ndarray,
     gy: np.ndarray,
@@ -69,11 +69,11 @@ def neighbourhood_match(
     within_frac: float = 0.2,
 ) -> dict:
     """
-    Per point and per search radius: the best-matching cell value, the neighbourhood maximum, and
+    Per point and per search radius: the best-matching cell value, the neighborhood maximum, and
     whether any cell falls within a tolerance of the observation.
 
     The three answer different questions. ``bm`` asks "could the model have been right nearby?",
-    ``nmx`` asks "how intense does the model get nearby at all?", and ``near20`` reduces the first to
+    ``nmx`` asks "how intense does the model get nearby at all?", and ``near`` reduces the first to
     a pass/fail that survives tabulation.
 
     Parameters
@@ -89,13 +89,12 @@ def neighbourhood_match(
     radii_m : iterable of float
         Half-widths of the square search boxes, in the CRS's units.
     within_frac : float
-        Relative tolerance for the pass/fail flag. The output key stays ``'near20'`` regardless --
-        it is a data contract with existing consumers, not a description of this argument.
+        Relative tolerance for the pass/fail flag.
 
     Returns
     -------
     dict
-        ``{radius: {'bm': ndarray, 'nmx': ndarray, 'near20': ndarray}}``, each array aligned to the
+        ``{radius: {'bm': ndarray, 'nmx': ndarray, 'near': ndarray}}``, each array aligned to the
         input points. Entries are NaN (or False) where the box contained no finite cell.
     """
     sxa, sya, ob = np.asarray(sx, float), np.asarray(sy, float), np.asarray(obs, float)
@@ -103,7 +102,7 @@ def neighbourhood_match(
     for r in radii_m:
         bm = np.full(len(ob), np.nan)
         nmx = np.full(len(ob), np.nan)
-        near20 = np.zeros(len(ob), bool)
+        near = np.zeros(len(ob), bool)
         for i in range(len(ob)):
             ix0 = int(np.searchsorted(gx, sxa[i] - r))
             ix1 = int(np.searchsorted(gx, sxa[i] + r))
@@ -115,8 +114,8 @@ def neighbourhood_match(
                 nmx[i] = float(blk.max())
                 bm[i] = float(blk[np.argmin(np.abs(blk - ob[i]))])
                 if ob[i] > 0 and (np.abs(blk - ob[i]) <= within_frac * ob[i]).any():
-                    near20[i] = True
-        out[r] = {'bm': bm, 'nmx': nmx, 'near20': near20}
+                    near[i] = True
+        out[r] = {'bm': bm, 'nmx': nmx, 'near': near}
     return out
 
 
@@ -187,14 +186,14 @@ def grid_best_match(
     """
     Point values and best-match values for a whole point set at one radius.
 
-    The values-only workhorse behind :func:`null_improvement`, which calls it once per null trial.
+    The values-only workhorse behind `null_improvement`, which calls it once per null trial.
 
     Parameters
     ----------
     field : np.ndarray
         Gridded model values, shape ``(len(gy), len(gx))``.
     gx, gy : np.ndarray
-        Ascending, **regularly spaced** grid axes (see :func:`nearest_indices`).
+        Ascending, **regularly spaced** grid axes (see `nearest_indices`).
     sx, sy : np.ndarray
         Point coordinates in the same CRS.
     obs : np.ndarray
@@ -231,7 +230,7 @@ def grid_best_match(
 def logvar_improvement(point_vals: np.ndarray, best_vals: np.ndarray,
                        obs: np.ndarray) -> tuple[float, int]:
     """
-    Fractional reduction in log-ratio variance from allowing the neighbourhood search.
+    Fractional reduction in log-ratio variance from allowing the neighborhood search.
 
     ``1 - var(log(best / obs)) / var(log(point / obs))``.
 
@@ -242,7 +241,7 @@ def logvar_improvement(point_vals: np.ndarray, best_vals: np.ndarray,
     Parameters
     ----------
     point_vals, best_vals : np.ndarray
-        Nearest-cell and best-match values, as from :func:`grid_best_match`.
+        Nearest-cell and best-match values, as from `grid_best_match`.
     obs : np.ndarray
         Observed value per point.
 
@@ -278,7 +277,7 @@ def null_improvement(
     null_dist_km: tuple[float, float] = NULL_DIST_KM,
 ) -> np.ndarray:
     """
-    Price what the neighbourhood search buys by luck alone.
+    Price what the neighborhood search buys by luck alone.
 
     Per trial, displace **every** point by one *common* random offset and recompute the
     point-to-best-match improvement there. A common offset rather than independent per-point jitter
@@ -288,7 +287,7 @@ def null_improvement(
     Compare the real improvement against this distribution. If it sits inside, the apparent skill of
     best-matching is search luck.
 
-    .. warning::
+    **WARNING:**
        **The generator is consumed inside a rejection loop, so the number of draws depends on the
        data.** Each attempt takes exactly two values (bearing, then distance) *including attempts
        later discarded for landing off-footprint*. Batching the draws, reordering them, or

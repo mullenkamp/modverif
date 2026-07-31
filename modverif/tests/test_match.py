@@ -21,7 +21,7 @@ from modverif.match import (
     grid_best_match,
     logvar_improvement,
     nearest_indices,
-    neighbourhood_match,
+    neighborhood_match,
     null_improvement,
 )
 
@@ -44,51 +44,51 @@ def test_nearest_indices_clips_rather_than_raising():
     np.testing.assert_array_equal(nearest_indices(coords, np.array([-1e6, 1e6])), [0, 4])
 
 
-# -------------------------------------------------------------------------- neighbourhood_match
-def test_neighbourhood_match_finds_a_displaced_peak():
+# -------------------------------------------------------------------------- neighborhood_match
+def test_neighborhood_match_finds_a_displaced_peak():
     gx, gy = toy_grid()
     field = np.full((len(gy), len(gx)), 5.0)
     field[40, 50] = 100.0                       # the model's peak, 4 km from the "gauge"
     sx, sy = np.array([46_000.0]), np.array([40_000.0])
     obs = np.array([100.0])
 
-    out = neighbourhood_match(field, gx, gy, sx, sy, obs, [2000.0, 6000.0])
+    out = neighborhood_match(field, gx, gy, sx, sy, obs, [2000.0, 6000.0])
     assert out[2000.0]['bm'][0] == pytest.approx(5.0), 'the tight box should not reach the peak'
-    assert out[2000.0]['near20'][0] is np.False_
+    assert out[2000.0]['near'][0] is np.False_
     assert out[6000.0]['bm'][0] == pytest.approx(100.0), 'the wide box should find it'
     assert out[6000.0]['nmx'][0] == pytest.approx(100.0)
-    assert out[6000.0]['near20'][0] is np.True_
+    assert out[6000.0]['near'][0] is np.True_
 
 
-def test_neighbourhood_match_tolerance_is_configurable_but_the_key_is_not():
-    """`within_frac` moves the threshold; the output key stays 'near20' (a data contract)."""
+def test_neighborhood_match_tolerance_is_configurable_but_the_key_is_not():
+    """`within_frac` moves the threshold; the output key stays 'near' (a data contract)."""
     gx, gy = toy_grid()
     field = np.full((len(gy), len(gx)), 70.0)
     sx, sy = np.array([40_000.0]), np.array([40_000.0])
     obs = np.array([100.0])                      # model is 30% low
-    assert 'near20' in neighbourhood_match(field, gx, gy, sx, sy, obs, [3000.0])[3000.0]
-    assert neighbourhood_match(field, gx, gy, sx, sy, obs, [3000.0], within_frac=0.2)[3000.0]['near20'][0] is np.False_
-    assert neighbourhood_match(field, gx, gy, sx, sy, obs, [3000.0], within_frac=0.4)[3000.0]['near20'][0] is np.True_
+    assert 'near' in neighborhood_match(field, gx, gy, sx, sy, obs, [3000.0])[3000.0]
+    assert neighborhood_match(field, gx, gy, sx, sy, obs, [3000.0], within_frac=0.2)[3000.0]['near'][0] is np.False_
+    assert neighborhood_match(field, gx, gy, sx, sy, obs, [3000.0], within_frac=0.4)[3000.0]['near'][0] is np.True_
 
 
 def test_the_default_tolerance_is_twenty_percent():
-    """The default is what the 'near20' key name promises; pin it independently of the argument."""
+    """The default is what the 'near' key name promises; pin it independently of the argument."""
     gx, gy = toy_grid()
     sx, sy = np.array([40_000.0]), np.array([40_000.0])
     obs = np.array([100.0])
     just_inside = np.full((len(gy), len(gx)), 81.0)      # 19% low  -> inside a 20% tolerance
     just_outside = np.full((len(gy), len(gx)), 79.0)     # 21% low  -> outside it
-    assert neighbourhood_match(just_inside, gx, gy, sx, sy, obs, [3000.0])[3000.0]['near20'][0] is np.True_
-    assert neighbourhood_match(just_outside, gx, gy, sx, sy, obs, [3000.0])[3000.0]['near20'][0] is np.False_
+    assert neighborhood_match(just_inside, gx, gy, sx, sy, obs, [3000.0])[3000.0]['near'][0] is np.True_
+    assert neighborhood_match(just_outside, gx, gy, sx, sy, obs, [3000.0])[3000.0]['near'][0] is np.False_
 
 
-def test_neighbourhood_match_reports_nan_off_footprint():
+def test_neighborhood_match_reports_nan_off_footprint():
     gx, gy = toy_grid()
     field = np.full((len(gy), len(gx)), np.nan)
-    out = neighbourhood_match(field, gx, gy, np.array([40_000.0]), np.array([40_000.0]),
+    out = neighborhood_match(field, gx, gy, np.array([40_000.0]), np.array([40_000.0]),
                               np.array([50.0]), [3000.0])[3000.0]
     assert np.isnan(out['bm'][0]) and np.isnan(out['nmx'][0])
-    assert out['near20'][0] is np.False_
+    assert out['near'][0] is np.False_
 
 
 # --------------------------------------------------------------------------- best_match_locate
@@ -176,7 +176,7 @@ def test_the_null_fires_when_there_is_no_real_correspondence():
     null = null_improvement(field, gx, gy, sx, sy, obs, 4000.0, 30, np.random.default_rng(2))
 
     assert len(null) > 0, 'the null produced no usable trials'
-    assert real > 0, 'searching a neighbourhood always improves the apparent fit'
+    assert real > 0, 'searching a neighborhood always improves the apparent fit'
     assert np.median(null) == pytest.approx(real, abs=0.25), (
         'with no true correspondence the null should reproduce the apparent improvement')
 

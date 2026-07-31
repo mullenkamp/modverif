@@ -61,15 +61,9 @@ fit = fit_bias_variogram(x_km, y_km, np.log(model / obs))
 band = bootstrap_variogram_params(x_km, y_km, np.log(model / obs))
 
 if fit['fit_ok']:
-    print(f"range {fit['rng']:.0f} km  (p5-p95 {band['rng'][0]:.0f}-{band['rng'][2]:.0f})")
+    print(f"range {fit['range_km']:.0f} km  (p5-p95 {band['range_km'][0]:.0f}-{band['range_km'][2]:.0f})")
     print(f"nugget effect {100 * fit['rel_nugget']:.0f}%")
 ```
-
-!!! note "`rng` here means *range*"
-
-    The result dicts spell the fitted length scale `'rng'`, which elsewhere in the Python ecosystem
-    means a random generator. It has nothing to do with one. The model function's parameter is named
-    `range_km` for readability; the dict key is a data contract and is left alone.
 
 ## API
 

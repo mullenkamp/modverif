@@ -1,12 +1,12 @@
 """
 Resampling inference and multiple-comparison corrections.
 
-Deliberately **not** in :mod:`modverif.spatial`: nothing here is spatial. A permutation p-value, a
+Deliberately **not** in `modverif.spatial`: nothing here is spatial. A permutation p-value, a
 family-wise error correction and a variance-explained ratio are general statistical tools, and the
 next code to need them is as likely to be a teleconnection analysis as a variogram. Burying them in a
 module named for one application is how a second consumer ends up writing its own copy.
 
-.. warning::
+**WARNING:**
    **Permutation tests are one-sided here, and the side is the caller's to choose.** The default
    (``'greater'``) asks "is the observed statistic unusually *high*?", which suits Moran's I and
    variance-explained. A test against a *negative* prior -- "is this correlation unusually low?" --
@@ -40,6 +40,12 @@ def holm_adjust(pvals) -> np.ndarray:
         sorted order (the step-down monotonicity that makes the family interpretable).
     """
     p = np.asarray(pvals, float)
+    if not np.isfinite(p).all():
+        # Python's max() propagates NaN unpredictably through the step-down running maximum, so a
+        # NaN input silently emerges as a finite -- and often significant -- adjusted value. A
+        # p-value that could not be computed must not be laundered into one that can be reported.
+        raise ValueError('holm_adjust received non-finite p-values; a p-value that could not be '
+                         'computed cannot be corrected. Drop or handle them before calling.')
     m = len(p)
     adj = np.empty(m)
     run = 0.0
@@ -62,7 +68,9 @@ def permutation_pvalue(observed: float, null, side: str = 'greater') -> float:
     observed : float
         The statistic computed on the real data.
     null : array-like
-        Statistics from the permuted replicates.
+        Statistics from the permuted replicates. Non-finite entries are **dropped**, and the
+        denominator counts only what survived -- a replicate whose statistic failed to compute is
+        not evidence either way, and leaving it in the denominator deflates the p-value.
     side : {'greater', 'less'}
         ``'greater'`` (default) tests whether ``observed`` is unusually **high**; ``'less'`` whether
         it is unusually **low**. There is no two-sided option: the tests this serves all have a
@@ -73,8 +81,30 @@ def permutation_pvalue(observed: float, null, side: str = 'greater') -> float:
     -------
     float
         p-value in ``(0, 1]``.
+
+    Raises
+    ------
+    ValueError
+        If ``observed`` is not finite, or no finite null replicates remain.
+
+    Notes
+    -----
+    **A non-finite ``observed`` is refused rather than scored.** Every comparison against NaN is
+    False, so a NaN statistic would score zero extremes and return the *smallest reportable
+    p-value* -- on **both** sides simultaneously. That is the most dangerous possible failure for
+    this function: a statistic that could not be computed reported as maximally significant.
+    Callers whose statistic can legitimately fail (too few samples, say) must check before calling.
     """
-    null = np.asarray(null)
+    null = np.asarray(null, float)
+    if not np.isfinite(observed):
+        raise ValueError(
+            f'permutation_pvalue received a non-finite observed statistic ({observed!r}). NaN '
+            f'compares False against everything, so scoring it would report maximum significance '
+            f'on both sides. Check your statistic is computable before testing it.')
+    finite = np.isfinite(null)
+    if not finite.any():
+        raise ValueError('permutation_pvalue received no finite null replicates')
+    null = null[finite]
     if side == 'greater':
         extreme = np.sum(null >= observed)
     elif side == 'less':

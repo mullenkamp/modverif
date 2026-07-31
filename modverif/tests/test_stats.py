@@ -111,3 +111,39 @@ def test_eta_squared_accepts_non_contiguous_labels():
     z = np.array([1.0, 1.0, 5.0, 5.0])
     assert eta_squared(z, np.array([7, 7, 99, 99])) == pytest.approx(1.0)
     assert eta_squared(z, np.array(['a', 'a', 'b', 'b'])) == pytest.approx(1.0)
+
+
+# ------------------------------------------------------- refusing statistics that cannot be scored
+def test_permutation_pvalue_refuses_a_non_finite_observed_statistic():
+    """The most dangerous failure this function can have, so it is refused rather than scored.
+
+    Every comparison against NaN is False, so a NaN statistic scores zero extremes and returns the
+    SMALLEST reportable p-value -- on both sides at once. Before this guard, a caller whose statistic
+    failed to compute (too few samples) would have printed "p = 0.001, significant".
+    """
+    null = np.random.default_rng(0).normal(size=999)
+    for bad in (np.nan, np.inf, -np.inf):
+        for side in ('greater', 'less'):
+            with pytest.raises(ValueError, match='non-finite observed'):
+                permutation_pvalue(bad, null, side=side)
+
+
+def test_permutation_pvalue_drops_non_finite_nulls_from_both_counts():
+    """A replicate that failed to compute is not evidence either way, and must not pad the
+    denominator -- leaving it in deflates the p-value toward significance."""
+    gen = np.random.default_rng(1)
+    clean = gen.normal(size=499)
+    padded = np.concatenate([clean, np.full(500, np.nan)])
+    assert permutation_pvalue(0.0, padded) == pytest.approx(permutation_pvalue(0.0, clean))
+
+
+def test_permutation_pvalue_refuses_an_entirely_non_finite_null():
+    with pytest.raises(ValueError, match='no finite null'):
+        permutation_pvalue(1.0, np.full(10, np.nan))
+
+
+def test_holm_adjust_refuses_non_finite_p_values():
+    """NaN propagates unpredictably through the step-down running maximum and emerges finite --
+    laundering a p-value that could not be computed into one that can be reported."""
+    with pytest.raises(ValueError, match='non-finite'):
+        holm_adjust([0.01, np.nan, 0.03])

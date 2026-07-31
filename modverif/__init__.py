@@ -9,4 +9,4 @@ from modverif.station import StationEvaluator
 # A new module does not belong here unless it also earns a top-level shortcut.
 __all__ = ['Evaluator', 'StationEvaluator']
 
-__version__ = '0.3.0'
+__version__ = '0.4.0'

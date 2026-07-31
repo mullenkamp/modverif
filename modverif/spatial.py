@@ -8,16 +8,11 @@ how far a bias field can be interpolated and how much of it is irreducible point
 
 Intended on the log-ratio ``log(model / obs)`` rather than the raw difference: a multiplicative bias
 field is usually the stationary one, and comparing the Cressie--Hawkins and Matheron estimators near
-the origin is a cheap test of which behaves better (see :func:`fit_bias_variogram`'s ``ch_n`` /
+the origin is a cheap test of which behaves better (see `fit_bias_variogram`'s ``ch_n`` /
 ``mat_n``).
 
-.. note::
-   **Two things named "rng" mean different things here, and neither is a random generator.**
-   :func:`exponential_variogram` takes ``range_km`` -- the e-folding length scale. The result dicts
-   from :func:`fit_bias_variogram` and :func:`fit_exponential_variogram` spell that same quantity
-   ``'rng'``, because that key is a data contract with existing consumers. The parameter was renamed
-   for readability; **the dict key must not be**, and neither has anything to do with
-   ``numpy.random.Generator``.
+The fitted length scale is called ``range_km`` throughout -- parameter and result key alike. Nothing
+here named ``rng`` is anything but a ``numpy.random.Generator``.
 """
 import numpy as np
 from scipy.cluster.vq import kmeans2
@@ -39,7 +34,7 @@ def ch_gamma(abs_diffs: np.ndarray) -> float:
     Cressie--Hawkins robust semivariance from a set of ``|z_i - z_j|`` pair values.
 
     Built on the mean square-root difference rather than the mean squared difference, so a single
-    outlying pair cannot dominate the estimate. Prefer this to :func:`matheron_gamma` on
+    outlying pair cannot dominate the estimate. Prefer this to `matheron_gamma` on
     heavy-tailed fields; their ratio near the origin is itself a diagnostic.
 
     Parameters
@@ -96,7 +91,7 @@ def empirical_variogram(
     abs_diffs : np.ndarray
         Absolute pairwise field differences, in the **same condensed order** as ``distances``.
     estimator : {'ch', 'matheron'}
-        ``'ch'`` selects :func:`ch_gamma`, anything else :func:`matheron_gamma`.
+        ``'ch'`` selects `ch_gamma`, anything else `matheron_gamma`.
     min_pairs_per_bin : int
         Bins with fewer pairs are dropped entirely rather than reported noisily.
     max_lag_pct : float
@@ -142,8 +137,7 @@ def exponential_variogram(h: np.ndarray, nugget: float, psill: float, range_km: 
     psill : float
         Partial sill; the model asymptotes to ``nugget + psill``.
     range_km : float
-        e-folding length scale, km. **Not** a random generator, despite the ``'rng'`` key used for
-        this quantity in the fit result dicts.
+        e-folding length scale, km. Reported under the same name in the fit result dicts.
 
     Returns
     -------
@@ -173,7 +167,7 @@ def fit_exponential_variogram(
     Parameters
     ----------
     centers, gammas, counts : np.ndarray
-        Empirical variogram points from :func:`empirical_variogram`.
+        Empirical variogram points from `empirical_variogram`.
     var_z : float
         Variance of the field; bounds the sill.
     max_lag : float
@@ -186,7 +180,7 @@ def fit_exponential_variogram(
     Returns
     -------
     dict or None
-        ``nugget``, ``psill``, ``sill``, ``rng`` (the range, km), ``rel_nugget``; or None if the fit
+        ``nugget``, ``psill``, ``sill``, ``range_km``, ``rel_nugget``; or None if the fit
         did not converge or there were too few points to attempt one.
     """
     if len(centers) < 2 or var_z <= 0:
@@ -210,7 +204,7 @@ def fit_exponential_variogram(
         return None
     psill, range_km = float(popt[0]), float(popt[1])
     sill = nugget + psill
-    return {'nugget': nugget, 'psill': psill, 'sill': sill, 'rng': range_km,
+    return {'nugget': nugget, 'psill': psill, 'sill': sill, 'range_km': range_km,
             'rel_nugget': (nugget / sill) if sill > 0 else np.nan}
 
 
@@ -241,7 +235,7 @@ def fit_bias_variogram(
     Returns
     -------
     dict
-        The fit parameters (``nugget``, ``psill``, ``sill``, ``rng``, ``rel_nugget``), the empirical
+        The fit parameters (``nugget``, ``psill``, ``sill``, ``range_km``, ``rel_nugget``), the empirical
         points (``centers``, ``gammas``, ``counts``, ``max_lag``), and diagnostics (``var_z``,
         ``ch_n``, ``mat_n``, ``n_near``, ``fit_ok``). Fit parameters are NaN when ``fit_ok`` is False.
 
@@ -263,7 +257,7 @@ def fit_bias_variogram(
            'var_z': var_z, 'ch_n': float(ch_n), 'mat_n': float(mat_n),
            'n_near': int(near.sum()), 'fit_ok': fit is not None}
     out.update(fit if fit else {'nugget': np.nan, 'psill': np.nan, 'sill': np.nan,
-                                'rng': np.nan, 'rel_nugget': np.nan})
+                                'range_km': np.nan, 'rel_nugget': np.nan})
     return out
 
 
@@ -288,7 +282,7 @@ def bootstrap_variogram_params(
     Subsampling without replacement, deliberately: resampling with replacement would create
     zero-distance duplicate pairs and corrupt the near-origin estimate.
 
-    .. warning::
+    **WARNING:**
        **This function takes a ``seed`` and constructs its own generator; it does not accept one.**
        That is intentional and load-bearing. Callers commonly invoke it more than once per run (say,
        for a log-ratio field and a raw-difference field), and each call is meant to start from the
@@ -302,7 +296,7 @@ def bootstrap_variogram_params(
     z : np.ndarray
         Field value per point.
     estimator : {'ch', 'matheron'}
-        Passed through to :func:`fit_bias_variogram`.
+        Passed through to `fit_bias_variogram`.
     n_boot : int
         Number of subsample refits to attempt.
     drop_frac : float
@@ -313,7 +307,7 @@ def bootstrap_variogram_params(
     Returns
     -------
     dict or None
-        ``rng`` and ``nugget``, each a ``(p5, p50, p95)`` tuple, plus ``drop_frac`` and ``n_ok``
+        ``range_km`` and ``nugget``, each a ``(p5, p50, p95)`` tuple, plus ``drop_frac`` and ``n_ok``
         (how many refits converged). None if fewer than half the refits converged, since a band from
         a minority of fits would misrepresent the uncertainty rather than describe it.
     """
@@ -325,8 +319,8 @@ def bootstrap_variogram_params(
     for _ in range(n_boot):
         idx = gen.permutation(n)[:keep]
         f = fit_bias_variogram(x_km[idx], y_km[idx], z[idx], estimator)
-        if f['fit_ok'] and np.isfinite(f['rng']):
-            ranges.append(f['rng'])
+        if f['fit_ok'] and np.isfinite(f['range_km']):
+            ranges.append(f['range_km'])
             nuggets.append(f['nugget'])
     if len(ranges) < n_boot // 2:
         return None
@@ -334,7 +328,7 @@ def bootstrap_variogram_params(
     def band(a):
         return tuple(float(v) for v in np.percentile(a, [5, 50, 95]))
 
-    return {'rng': band(ranges), 'nugget': band(nuggets), 'drop_frac': drop_frac,
+    return {'range_km': band(ranges), 'nugget': band(nuggets), 'drop_frac': drop_frac,
             'n_ok': len(ranges)}
 
 
@@ -380,7 +374,7 @@ def morans_i_permutation(
     """
     Permutation null for Moran's I across one or more weight matrices.
 
-    .. warning::
+    **WARNING:**
        **One shuffle is evaluated against every weight matrix, by design.** Testing each matrix with
        its own independent permutations would draw ``n_perm x len(weight_mats)`` times instead of
        ``n_perm``, and -- more importantly -- would destroy the correlation *between* the bands'
@@ -424,6 +418,8 @@ def morans_i_permutation(
 
 
 # ------------------------------------------------------------------------------------ regionalisation
+# (the out-of-sample PREDICTORS that consume these groupings live in modverif.crossval --
+#  neither of them uses coordinates, so neither belongs in a spatial-structure module)
 def best_kmeans(xy: np.ndarray, k: int, rng: np.random.Generator, n_restart: int = 20):
     """
     k-means on point coordinates, keeping the lowest-inertia labelling over several restarts.
@@ -432,7 +428,7 @@ def best_kmeans(xy: np.ndarray, k: int, rng: np.random.Generator, n_restart: int
     toss dressed as an answer. Restarts make the labelling reproducible in practice rather than only
     in principle.
 
-    .. note::
+    **NOTE:**
        The restart seeds are drawn in **one vectorised call**. Replacing that with per-restart scalar
        draws consumes the caller's generator differently and changes every downstream result.
 
@@ -471,52 +467,3 @@ def best_kmeans(xy: np.ndarray, k: int, rng: np.random.Generator, n_restart: int
         if inertia < best_inertia:
             best_lab, best_inertia = lab, inertia
     return best_lab
-
-
-def loo_cluster_pred(z: np.ndarray, labels: np.ndarray) -> np.ndarray:
-    """
-    Leave-one-out prediction from cluster means.
-
-    Each point is predicted from its own cluster's mean computed **without it**. Including the point
-    in its own predictor is the standard way to make a regionalisation look skilful when it is
-    merely descriptive.
-
-    Parameters
-    ----------
-    z : np.ndarray
-        Field values.
-    labels : np.ndarray
-        Cluster label per point.
-
-    Returns
-    -------
-    np.ndarray
-        Prediction per point. A singleton cluster falls back to the leave-one-out **global** mean,
-        since a cluster of one carries no information about itself.
-    """
-    n = len(z)
-    pred = np.empty(n)
-    for i in range(n):
-        same = (labels == labels[i])
-        same[i] = False
-        pred[i] = z[same].mean() if same.any() else z[np.arange(n) != i].mean()
-    return pred
-
-
-def loo_global_mean(z: np.ndarray) -> np.ndarray:
-    """
-    Leave-one-out global mean -- the aspatial baseline any regionalisation must beat.
-
-    Parameters
-    ----------
-    z : np.ndarray
-        Field values.
-
-    Returns
-    -------
-    np.ndarray
-        Mean of all other points, per point.
-    """
-    n = len(z)
-    tot = z.sum()
-    return (tot - z) / (n - 1)

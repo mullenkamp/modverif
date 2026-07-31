@@ -5,7 +5,7 @@ is *displaced* just as hard as one that is *wrong*. Relaxing the comparison to "
 within R" separates those two failures — the model got the amount right but put it in the wrong place,
 versus the model got the amount wrong.
 
-!!! danger "A neighbourhood search is a biased estimator, always"
+!!! danger "A neighborhood search is a biased estimator, always"
 
     In a 3 km box on a 1 km grid there are roughly 50 candidate cells. A near-matching value exists
     almost regardless of whether the model has any skill at that location, so **best-matching always
@@ -20,7 +20,7 @@ versus the model got the amount wrong.
 
 | function | question |
 |---|---|
-| [`neighbourhood_match`](#modverif.match.neighbourhood_match) | Could the model have been right nearby? How intense does it get nearby at all? |
+| [`neighborhood_match`](#modverif.match.neighborhood_match) | Could the model have been right nearby? How intense does it get nearby at all? |
 | [`best_match_locate`](#modverif.match.best_match_locate) | **Where** is the match, and **when** did it fall there? |
 | [`grid_best_match`](#modverif.match.grid_best_match) | Values only, for a whole point set — the null's workhorse |
 | [`logvar_improvement`](#modverif.match.logvar_improvement) | How much scatter did the search remove? |

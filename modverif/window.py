@@ -12,9 +12,9 @@ cleanup, so each is a separate function with its convention stated in its own do
 ============================  =========================  ==================================
 function                      input                      a window containing a gap...
 ============================  =========================  ==================================
-:func:`rolling_window_max`    gridded ``(nt, ny, nx)``    ...counts, with gaps read as zero
-:func:`rolling_max_valid`     1-D series                 ...is disqualified outright
-:func:`rolling_window_sums`   1-D series                 ...is summed AND flagged, caller decides
+`rolling_window_max`    gridded ``(nt, ny, nx)``    ...counts, with gaps read as zero
+`rolling_max_valid`     1-D series                 ...is disqualified outright
+`rolling_window_sums`   1-D series                 ...is summed AND flagged, caller decides
 ============================  =========================  ==================================
 
 The grid convention suits gap-free model output, where a NaN means "no precipitation recorded here"
@@ -23,10 +23,10 @@ hour must not compete against complete ones on an artificially low total. The th
 model series and an observation series can be reduced by *one* implementation -- which is what stops
 the two sides' window start times from drifting apart numerically.
 
-.. warning::
+**WARNING:**
    **Tie-breaking is load-bearing and ties are common.** Zero-padded windows sum to bitwise-identical
    totals surprisingly often -- for a 6-hour burst inside a 72-hour record, 19 of 49 24-hour windows
-   tie exactly. :func:`rolling_window_max` resolves a tie via ``argmax`` and :func:`max_window` via a
+   tie exactly. `rolling_window_max` resolves a tie via ``argmax`` and `max_window` via a
    ``>= vmax - _TIE_TOL`` first-candidate scan; **they agree only because both scan first-to-last.**
    Reversing either scan direction shifts reported window start times by hours. Do not "harmonise"
    the two rules, and do not reorder the scans.
@@ -46,7 +46,7 @@ def rolling_window_max(field: np.ndarray, window: int) -> tuple[np.ndarray, np.n
 
     Missing values are read as zero, so every window competes. This suits gap-free model output,
     where a NaN means "nothing here" rather than "unknown"; for observations, where a gap must
-    disqualify its window, use :func:`rolling_max_valid`.
+    disqualify its window, use `rolling_max_valid`.
 
     Parameters
     ----------
@@ -109,10 +109,10 @@ def rolling_window_sums(series: np.ndarray, window: int) -> tuple[np.ndarray, np
     Every rolling ``window``-step sum of a 1-D series, plus which windows are fully observed.
 
     Reports both conventions instead of choosing: sums treat gaps as zero (the
-    :func:`rolling_window_max` grid rule), while ``valid`` marks the all-finite windows (the
-    :func:`rolling_max_valid` observation rule). One implementation can therefore reduce a model
+    `rolling_window_max` grid rule), while ``valid`` marks the all-finite windows (the
+    `rolling_max_valid` observation rule). One implementation can therefore reduce a model
     series and an observation series, which is what keeps the two sides' window start times from
-    drifting apart numerically. Pair with :func:`max_window` to select.
+    drifting apart numerically. Pair with `max_window` to select.
 
     Parameters
     ----------
@@ -136,7 +136,7 @@ def rolling_window_sums(series: np.ndarray, window: int) -> tuple[np.ndarray, np
 
 def max_window(sums: np.ndarray, valid: np.ndarray, tol: float) -> tuple[float, int, float, bool]:
     """
-    Select the maximal window from :func:`rolling_window_sums` output, with an ambiguity diagnostic.
+    Select the maximal window from `rolling_window_sums` output, with an ambiguity diagnostic.
 
     The diagnostic is the point: over a long event the maximum is often nearly flat, so the reported
     start time can move by hours at almost no cost in depth. ``spread`` quantifies that directly, and
@@ -147,7 +147,7 @@ def max_window(sums: np.ndarray, valid: np.ndarray, tol: float) -> tuple[float, 
     ----------
     sums : np.ndarray
         Rolling window sums. **Assumed non-negative** -- accumulations of a non-negative quantity,
-        which is what :func:`rolling_window_sums` produces. With a negative maximum and ``tol > 0``,
+        which is what `rolling_window_sums` produces. With a negative maximum and ``tol > 0``,
         ``(1 - tol) * vmax`` exceeds ``vmax``, no window qualifies as near-maximal, and ``spread``
         raises on the empty selection. Unreachable for precipitation; stated because this is public
         API and the assumption is otherwise invisible.
