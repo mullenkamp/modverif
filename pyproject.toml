@@ -53,9 +53,10 @@ allow-direct-references = true
 # path = "modverif/__init__.py"
 
 [tool.hatch.envs.default]
-# NO `python` pin here. CI's `hatch env create` honours it, so a pin makes the 3.10/3.11/3.12
-# matrix below decorative -- every leg would resolve the pinned interpreter and test that one
-# version, while reporting three green builds. The suite passes on 3.10 and 3.12 (verified).
+# NO `python` pin here: it would make the `envs.all` matrix below decorative, since a pinned
+# interpreter is resolved regardless of which one the matrix asks for. CI does not use hatch --
+# .github/workflows/test.yml installs via setup-python + `pip install .` -- but `hatch run all:test`
+# should mean what it says. The suite passes on 3.10 and 3.12 (verified).
 dependencies = [
     "spyder-kernels==2.5.2",
     "black",
@@ -83,8 +84,9 @@ dependencies = [
 ]
 [tool.hatch.envs.lint.scripts]
 typing = "mypy --install-types --non-interactive {args:modverif}"
-# `style` is the CI gate, and is ruff-only on purpose: `black --check` would reformat 18 of 20
-# files (~1230 lines). Adopting a formatter wholesale is a separate decision -- `fmt` below is
+# `style` is the local equivalent of CI's lint job (.github/workflows/test.yml) -- keep the two in
+# step, including the ruff bound above. Ruff-only on purpose: `black --check` would reformat 18 of
+# 20 files (~1230 lines). Adopting a formatter wholesale is a separate decision -- `fmt` below is
 # there for when it is taken. Scoped at `modverif` so it does not lint conda/, docs/ or the
 # generated site/ tree.
 style = "ruff check {args:modverif}"
@@ -101,9 +103,10 @@ all = [
 [tool.hatch.envs.default.scripts]
 test = "pytest {args:modverif/tests}"
 test-cov = "coverage run -m pytest {args:modverif/tests}"
-# `coverage combine` is NOT optional here. [tool.coverage.run] sets parallel = true, so
-# `coverage run` writes a machine/pid-suffixed data file; without the combine, `coverage xml`
-# reports "No data to report" and exits 1 -- a red CI build with every test passing.
+# Local convenience for producing coverage.xml; nothing in CI consumes it today.
+# `coverage combine` is NOT optional: [tool.coverage.run] sets parallel = true, so `coverage run`
+# writes a machine/pid-suffixed data file, and without the combine `coverage xml` reports
+# "No data to report" and exits 1 -- with every test passing.
 test-cov-xml = [
   "coverage run -m pytest {args:modverif/tests}",
   "- coverage combine",
@@ -131,7 +134,8 @@ skip-string-normalization = true
 line-length = 120
 
 [tool.ruff.lint]
-# This list is DELIBERATELY NARROW, and CI gates on it being clean.
+# This list is DELIBERATELY NARROW, and CI gates on it being clean
+# (.github/workflows/test.yml, the `lint` job).
 #
 # The template default selected 25 rule families and produced 2727 findings, which is the same as
 # no linting at all -- nobody reads 2727. Worse, 76% of it was configuration fighting this
