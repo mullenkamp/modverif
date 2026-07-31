@@ -79,5 +79,6 @@ nav:
         - Metrics: reference/metrics.md
         - Rolling Windows: reference/window.md
         - Spatial Structure: reference/spatial.md
+        - Point-to-Grid Matching: reference/match.md
         - API: reference/modverif.md
     - Development: development.md
