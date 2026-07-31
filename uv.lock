@@ -70,16 +70,16 @@ wheels = [
 
 [[package]]
 name = "booklet"
-version = "0.11.0"
+version = "0.12.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "orjson" },
     { name = "portalocker" },
     { name = "uuid6" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/72/23/0ac11cb3a26e9f79e146b83213f164d8f09c012fbbd4e5ccc685175df064/booklet-0.11.0.tar.gz", hash = "sha256:63861a64ead9c0f7854bde00514ef36d7df12e3f5656f64833c7f09877c5fe49", size = 27974, upload-time = "2026-02-14T00:54:06.454Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9d/bc/5abf1dfcbcd533b44d4eb957a553e9b983af59beda708d54f82aac7a9777/booklet-0.12.9.tar.gz", hash = "sha256:a80b4fd8fa855db2b82161be128c75f970360b40584d5ca0b2efc34de47d2f12", size = 39645, upload-time = "2026-07-21T08:44:48.755Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/17/73/3e5976633f2d3e05d490cf76ec34c64c4b846c8845bac9671e1d5c35f446/booklet-0.11.0-py3-none-any.whl", hash = "sha256:fb96778827d84004c428ca3553474b714f37665615922e9cff871d57bfc60e38", size = 29592, upload-time = "2026-02-14T00:54:04.356Z" },
+    { url = "https://files.pythonhosted.org/packages/a6/e0/f45201d6d81738612378300f42504780ea426cc91d260e5d38261647d2cd/booklet-0.12.9-py3-none-any.whl", hash = "sha256:058e685d824122f3a07d0a1a703ee08c9c84c6d1a2322f627baacea1ab82c43a", size = 41721, upload-time = "2026-07-21T08:44:47.076Z" },
 ]
 
 [[package]]
@@ -127,10 +127,12 @@ wheels = [
 
 [[package]]
 name = "cfdb"
-version = "0.3.2"
+version = "0.9.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "booklet" },
+    { name = "cfdb-models" },
+    { name = "cfdb-vars" },
     { name = "geointerp" },
     { name = "lz4" },
     { name = "msgspec" },
@@ -142,9 +144,31 @@ dependencies = [
     { name = "shapely" },
     { name = "zstandard" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4a/01/3559678dbdbd1580801b53d27f51544fad31c4e24e0a3f8524faa16d30b3/cfdb-0.3.2.tar.gz", hash = "sha256:d3c814a32bf95ea2c84a93374cc160e151dd01f7eab31063aa6b64b75b6f7666", size = 55953, upload-time = "2026-02-19T02:16:36.575Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/84/f5/4a3b466e50103fb83c911b461b88386a158f9810f24c1d697a8e8e07ee59/cfdb-0.9.5.tar.gz", hash = "sha256:cfc1d72d1fd9fe6ac55f18e6e713ebb9aa4236c6ff05356cf362e970b610b316", size = 73499, upload-time = "2026-07-21T03:05:23.374Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c4/e7/e2f26a06cfba52660b67fa0e1bb102cddaf5c11b22f3123f0ac5e0b37320/cfdb-0.3.2-py3-none-any.whl", hash = "sha256:bcb11e07db2901de4851138f564455101f0df11927f252edca834a13be062f25", size = 61696, upload-time = "2026-02-19T02:16:34.358Z" },
+    { url = "https://files.pythonhosted.org/packages/d7/9f/13c3130fe064949b05db7b3f21fa48d6d1d5fc773b89aeffbf997ceba245/cfdb-0.9.5-py3-none-any.whl", hash = "sha256:26b51ef63bf06c2db99d64d0b26c74ed28fb7d5de79286e8a1ed8e4ae852a5ba", size = 80479, upload-time = "2026-07-21T03:05:21.282Z" },
+]
+
+[[package]]
+name = "cfdb-models"
+version = "0.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f1/50/1357bef5ff8b440c519fd0fb4868112d4aa1122009c591e896e20969db75/cfdb_models-0.1.0.tar.gz", hash = "sha256:63a7d6abff0ee28479cca83ca798fd6e8903a6539382a8f6639679895dfeb32f", size = 4220, upload-time = "2026-02-20T03:02:18.204Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d6/f7/29112de4955eba16fccc97ac4a8e973665ac72a46b9923be8e3a0b47d365/cfdb_models-0.1.0-py3-none-any.whl", hash = "sha256:90a903f2d35fa41064298352d37be92f4092997af85cb845075663edfb330704", size = 3736, upload-time = "2026-02-20T03:02:17.038Z" },
+]
+
+[[package]]
+name = "cfdb-vars"
+version = "0.2.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cfdb-models" },
+    { name = "msgspec" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9b/7c/63e4fee26412bdf4b93f3ecacad9424504da315b320e46147fabbd005e80/cfdb_vars-0.2.2.tar.gz", hash = "sha256:19484cbbf4259f267bbd4b3a216decbf3f14d78b342c6762816df6fa2026903b", size = 7949, upload-time = "2026-03-27T02:35:46.893Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/98/49/054e7d8806ff5e36274bf45ffbe894d406923bf0a4512b83779cf567a4c9/cfdb_vars-0.2.2-py3-none-any.whl", hash = "sha256:14518f9a7d123e7a10445be002348ecdbf6656c9b18ca2f126efe57672c05a63", size = 8064, upload-time = "2026-03-27T02:35:45.953Z" },
 ]
 
 [[package]]
@@ -1170,12 +1194,12 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "cartopy" },
-    { name = "cfdb" },
+    { name = "cfdb", specifier = ">=0.9.5" },
     { name = "h5py" },
     { name = "matplotlib" },
     { name = "numpy", specifier = ">2" },
     { name = "pyproj" },
-    { name = "rechunkit", specifier = ">=0.2.1" },
+    { name = "rechunkit", specifier = ">=0.6.0" },
     { name = "scipy" },
 ]
 
@@ -2092,15 +2116,15 @@ wheels = [
 
 [[package]]
 name = "rechunkit"
-version = "0.2.1"
+version = "0.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/cb/23/cc5965f51ffd2f8894671d546c7d8f3cbab7a36ae3ed4ffba5b569da5cda/rechunkit-0.2.1.tar.gz", hash = "sha256:dcf219c3d8e549d7509379171975c218b503c0262a55ee866347cbd03ce7c7d7", size = 8988, upload-time = "2026-01-27T19:44:05.09Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/13/60/7182e5a8b128929d36a89c9695945705acdec8f2681e13a0c3f8d6adb682/rechunkit-0.6.0.tar.gz", hash = "sha256:dda6fa3e45dbb78a2946b1fffbf42d0f859fdc8cebf840640bae341a3a8f68a6", size = 14893, upload-time = "2026-07-21T02:59:34.397Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/fd/80/c7274f2ee477772f312aa51130a6941a2733eea86f2b443d32b8cc27c933/rechunkit-0.2.1-py3-none-any.whl", hash = "sha256:14be5bcd8343f82d5ab1b9f0120b1fc848db3733af4ef334f91362640f0db397", size = 8441, upload-time = "2026-01-27T19:44:03.402Z" },
+    { url = "https://files.pythonhosted.org/packages/36/07/9c491661bd559409fc5115919968f6c0faadd914fe55726952d5c1ec6233/rechunkit-0.6.0-py3-none-any.whl", hash = "sha256:e24bbf36ca385c241ed476f6a3f397e140ddcaaf46a490932e1d80e2e7204256", size = 14109, upload-time = "2026-07-21T02:59:32.851Z" },
 ]
 
 [[package]]

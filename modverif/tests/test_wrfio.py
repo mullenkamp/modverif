@@ -1,8 +1,6 @@
 """
 Tests for the modverif.io module.
 """
-import pathlib
-import tempfile
 
 import h5py
 import numpy as np
@@ -79,7 +77,7 @@ class TestWRFFile:
     def test_file_not_found(self, tmp_path):
         """Test that FileNotFoundError is raised for missing files."""
         with pytest.raises(FileNotFoundError):
-            with WRFFile(tmp_path / "nonexistent.nc") as wrf:
+            with WRFFile(tmp_path / "nonexistent.nc"):
                 pass
 
     def test_n_times(self, sample_wrf_file):
@@ -455,7 +453,7 @@ class TestNetCDF4Writer:
         filepath = tmp_path / "test.nc"
         data = np.array([0.5, 1.5, 2.5, 3.5])
         with NetCDF4Writer(filepath) as nc:
-            dim_ds = nc.create_dimension('x', 4, data=data)
+            nc.create_dimension('x', 4, data=data)
 
         with h5py.File(filepath, 'r') as f:
             np.testing.assert_array_equal(f['x'][:], data)
@@ -465,7 +463,7 @@ class TestNetCDF4Writer:
         filepath = tmp_path / "test.nc"
         time_data = np.array([0.0, 1.0, 2.0])
         with NetCDF4Writer(filepath) as nc:
-            time_ds = nc.create_time_dimension(3, data=time_data)
+            nc.create_time_dimension(3, data=time_data)
 
         with h5py.File(filepath, 'r') as f:
             assert f['time'].attrs['units'] == b'hours since 1970-01-01'
@@ -477,7 +475,7 @@ class TestNetCDF4Writer:
         filepath = tmp_path / "test.nc"
         metrics = ['ne', 'ane', 'rmse']
         with NetCDF4Writer(filepath) as nc:
-            metric_ds = nc.create_metric_dimension(metrics)
+            nc.create_metric_dimension(metrics)
 
         with h5py.File(filepath, 'r') as f:
             assert f['metric'].attrs['flag_meanings'] == b'ne ane rmse'
@@ -499,7 +497,7 @@ class TestNetCDF4Writer:
         """Test creating a variable with attributes."""
         filepath = tmp_path / "test.nc"
         with NetCDF4Writer(filepath) as nc:
-            var_ds = nc.create_variable(
+            nc.create_variable(
                 'temperature',
                 shape=(10, 20, 30),
                 dtype='f4',
@@ -519,7 +517,7 @@ class TestNetCDF4Writer:
         filepath = tmp_path / "test.nc"
         data = np.random.rand(5, 10).astype(np.float32)
         with NetCDF4Writer(filepath) as nc:
-            var_ds = nc.create_variable('data', shape=data.shape, data=data)
+            nc.create_variable('data', shape=data.shape, data=data)
 
         with h5py.File(filepath, 'r') as f:
             np.testing.assert_array_equal(f['data'][:], data)
@@ -528,7 +526,7 @@ class TestNetCDF4Writer:
         """Test that compression is applied by default."""
         filepath = tmp_path / "test.nc"
         with NetCDF4Writer(filepath) as nc:
-            var_ds = nc.create_variable('data', shape=(10, 20, 30), dtype='f4')
+            nc.create_variable('data', shape=(10, 20, 30), dtype='f4')
 
         with h5py.File(filepath, 'r') as f:
             assert f['data'].compression == 'gzip'
@@ -537,7 +535,7 @@ class TestNetCDF4Writer:
         """Test creating a variable without compression."""
         filepath = tmp_path / "test.nc"
         with NetCDF4Writer(filepath) as nc:
-            var_ds = nc.create_variable('data', shape=(10,), dtype='f4', compress=False)
+            nc.create_variable('data', shape=(10,), dtype='f4', compress=False)
 
         with h5py.File(filepath, 'r') as f:
             assert f['data'].compression is None
@@ -546,7 +544,7 @@ class TestNetCDF4Writer:
         """Test creating a variable with fill value."""
         filepath = tmp_path / "test.nc"
         with NetCDF4Writer(filepath) as nc:
-            var_ds = nc.create_variable(
+            nc.create_variable(
                 'data', shape=(10,), dtype='f4', fill_value=np.float32(-999.0)
             )
 

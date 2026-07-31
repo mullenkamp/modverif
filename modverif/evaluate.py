@@ -2,23 +2,23 @@
 Convenience functions for evaluating model outputs stored in cfdb datasets.
 """
 import pathlib
-from typing import Union, List, Tuple
+from typing import List, Tuple, Union
 
 import cfdb
 import numpy as np
 
-from modverif.evaluator import Evaluator
-from modverif.station import StationEvaluator
 from modverif.cyclone import (
     CyclonePosition,
     _estimate_cyclone_radius,
     _find_pressure_minimum,
     _grid_distances_km,
-    _haversine_distance,
-    _read_latlon_2d,
     _read_slp_from_cfdb,
     _read_var_2d,
+    haversine_distance,
+    read_latlon_2d,
 )
+from modverif.evaluator import Evaluator
+from modverif.station import StationEvaluator
 
 
 def evaluate_models_cell(
@@ -189,8 +189,8 @@ def evaluate_cyclones(
             raise ValueError(f"Unknown metric '{m}'. Available: {AVAILABLE_DOMAIN_METRICS}")
 
     with cfdb.open_dataset(source) as ds_s, cfdb.open_dataset(test) as ds_t:
-        xlat_s, xlong_s = _read_latlon_2d(ds_s)
-        xlat_t, xlong_t = _read_latlon_2d(ds_t)
+        xlat_s, xlong_s = read_latlon_2d(ds_s)
+        xlat_t, xlong_t = read_latlon_2d(ds_t)
 
         s_time = ds_s['time'].data
         t_time = ds_t['time'].data
@@ -216,7 +216,7 @@ def evaluate_cyclones(
 
         var_results = {var: np.zeros((n_times, len(metrics)), dtype=np.float32) for var in variables}
 
-        for out_t, (s_t_idx, t_t_idx) in enumerate(zip(s_time_indices, t_time_indices)):
+        for out_t, (s_t_idx, t_t_idx) in enumerate(zip(s_time_indices, t_time_indices, strict=True)):
             # Track source cyclone
             slp_s = _read_slp_from_cfdb(ds_s, int(s_t_idx), smoothing_sigma=smoothing_sigma)
             if out_t == 0 and current_lat_s is None:
@@ -281,7 +281,7 @@ def evaluate_cyclones(
 
     # Write output to cfdb
     with cfdb.open_dataset(output_path, 'n', dataset_type='grid') as ds_out:
-        time_coord = ds_out.create.coord.time(data=common_times)
+        ds_out.create.coord.time(data=common_times)
         metric_indices = np.arange(len(metrics), dtype='int32')
         metric_coord = ds_out.create.coord.generic('metric', data=metric_indices, dtype='int32')
         metric_coord.attrs['flag_meanings'] = ' '.join(metrics)
@@ -310,7 +310,7 @@ def evaluate_cyclones(
 
         # Track difference variables
         pos_diff = np.array([
-            _haversine_distance(
+            haversine_distance(
                 source_positions[t].latitude, source_positions[t].longitude,
                 test_positions[t].latitude, test_positions[t].longitude
             ) for t in range(n_times)

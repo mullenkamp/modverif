@@ -44,8 +44,9 @@ Compare gridded model output to weather station observations:
 
 Track cyclones independently in two datasets and compare:
 
-- Cyclone tracking via SLP pressure minimum
-- Track position, pressure, and radius differences
+- Cyclone tracking via SLP pressure minimum, over an optional time window
+- Works on projected model grids (`y`/`x` + CRS), not just lat/lon
+- Depth bias, timing offset and track separation, each track compared at its own minimum
 - Per-variable metrics within the cyclone region
 
 ### Verification Plots
@@ -117,6 +118,38 @@ Or with UV:
 ```bash
 uv add modverif
 ```
+
+## Cartopy Notes
+
+modverif uses [cartopy](https://scitools.org.uk/cartopy/) for geographic map projections in composite and station map plots. Cartopy is optional -- plots fall back to plain matplotlib axes if cartopy is not installed -- but there are a few gotchas worth knowing about when working with projected WRF domains.
+
+### Lambert Conformal `cutoff` clips Southern Hemisphere domains
+
+Cartopy's `LambertConformal` projection has a `cutoff` parameter (default `-30`) that silently limits how far the map extends from the projection centre. For Northern Hemisphere projections this is fine, but for Southern Hemisphere domains the default boundary sits at 30 S. Any data north of 30 S is simply not displayed -- no error, no warning.
+
+modverif sets `cutoff=30` for SH projections automatically (`pyproj_to_cartopy` in `composite.py`), but if you create your own cartopy axes for a SH Lambert Conformal domain, remember to pass an appropriate cutoff:
+
+```python
+import cartopy.crs as ccrs
+
+proj = ccrs.LambertConformal(
+    central_longitude=178, central_latitude=-34,
+    standard_parallels=[-41, -41],
+    cutoff=30,  # default -30 clips SH domains
+)
+```
+
+### Antimeridian (180 longitude)
+
+Domains that cross the 180 meridian (e.g., New Zealand) are a recurring source of issues:
+
+- **NCAR ERA5 data** uses 0-360 longitude convention. When regridding to a WRF Lambert Conformal grid via pyproj, the transformed longitudes come back in -180/180 convention. A naive interpolation lookup will fail for points near the antimeridian because -175 is outside the ERA5 range of [144, 190]. The fix is to convert target longitudes to 0-360 (`lon % 360`) before interpolation.
+- **cfdb's `GridInterp.to_grid()`** transforms target coordinates internally via pyproj, so it also returns -180/180 longitudes and cannot match ERA5's 0-360 range. For antimeridian-crossing domains, use `scipy.interpolate.RegularGridInterpolator` directly with explicit longitude convention handling instead of `to_grid()`.
+- **Longitude values > 180** in WRF lat/lon auxiliary variables are masked out in modverif's composite plots (`_read_grid_from_ds`) to prevent cartopy from wrapping the map around the full globe. This only applies to datasets with `latitude`/`longitude` coordinates, not projected `y`/`x` grids.
+
+### Comparison panel spacing
+
+Side-by-side composite comparison plots auto-compute figure size and subplot spacing (`wspace`) from the domain's aspect ratio. Cartopy GeoAxes maintain the map's aspect ratio regardless of the subplot allocation, so different domain shapes need different spacing to avoid gaps or overlaps. The auto-computation handles this; if you need manual control, pass `figsize` and adjust `wspace` via the `GridSpec`.
 
 ## Dependencies
 

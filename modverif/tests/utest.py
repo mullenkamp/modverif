@@ -5,9 +5,10 @@ Created on Wed Feb  4 13:43:27 2026
 
 @author: mike
 """
-import sys
 # import h5py
 import pathlib
+import sys
+
 # import cfdb
 # import rechunkit
 # import salem

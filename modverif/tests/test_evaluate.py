@@ -1,14 +1,12 @@
 """
 Tests for modverif evaluation pipeline using cfdb datasets.
 """
-import pathlib
 
 import cfdb
 import numpy as np
 import pytest
 
 from modverif.evaluate import evaluate_cyclones, evaluate_models_cell, evaluate_models_domain
-from modverif.evaluator import Evaluator
 from modverif.metrics import AVAILABLE_DOMAIN_METRICS, AVAILABLE_METRICS
 
 
@@ -630,7 +628,7 @@ class TestEvaluateCyclones:
         source_path, test_path = mock_cyclone_files
         output_path = tmp_path / 'cyclone_eval_all.cfdb'
 
-        result = evaluate_cyclones(
+        evaluate_cyclones(
             source_path, test_path, output_path,
             variables=['precipitation'],
             metrics=list(AVAILABLE_DOMAIN_METRICS),

@@ -11,9 +11,35 @@ from typing import Union
 import cfdb
 import matplotlib.pyplot as plt
 import numpy as np
-import pyproj
 
-from modverif.cyclone import _read_latlon_2d, _read_var_2d, _read_slp_from_cfdb
+from modverif.cyclone import (
+    _read_slp_block_from_cfdb,
+    _read_slp_from_cfdb,
+    _read_var_2d,
+    _read_var_3d_time_slice,
+    read_latlon_2d,
+)
+
+_UNSET = object()
+
+# Physical-range fill thresholds. Real values are O(1e5) Pa for mslp and
+# O(1e3) kg/m/s for VIMF; anything well above these (e.g. ~2.1e8 from a
+# decoded int fill value) means the cfdb chunk was never properly written.
+_MSLP_FILL_ABS = 200_000.0
+_VIMF_FILL_ABS = 100_000.0
+
+
+def _storm_field_fill_mask(pwat, mslp, vimf_u, vimf_v):
+    """Return a 2D mask of cells that are NaN or out-of-range fill values."""
+    return (
+        np.isnan(pwat)
+        | np.isnan(mslp)
+        | np.isnan(vimf_u)
+        | np.isnan(vimf_v)
+        | (np.abs(mslp) > _MSLP_FILL_ABS)
+        | (np.abs(vimf_u) > _VIMF_FILL_ABS)
+        | (np.abs(vimf_v) > _VIMF_FILL_ABS)
+    )
 
 try:
     import cartopy.crs as ccrs
@@ -24,12 +50,21 @@ except ImportError:
     HAS_CARTOPY = False
 
 
-def _pyproj_to_cartopy(crs):
+def pyproj_to_cartopy(crs):
     """
     Convert a pyproj CRS to a cartopy CRS projection.
 
     Supports Lambert Conformal Conic, Polar Stereographic, Mercator,
-    and geographic (lat/lon) projections.
+    and geographic (lat/lon) projections; anything else falls back to PlateCarree.
+
+    For Southern Hemisphere Lambert Conformal domains the cutoff is flipped to ``+30``,
+    because cartopy's default of ``-30`` clips the domain at 30 degrees south.
+
+    Returns
+    -------
+    cartopy.crs.CRS or None
+        ``None`` when cartopy is not installed -- callers are expected to fall back to
+        an unprojected plot rather than fail.
     """
     if not HAS_CARTOPY:
         return None
@@ -38,12 +73,17 @@ def _pyproj_to_cartopy(crs):
     proj_name = cf.get('grid_mapping_name', '')
 
     if proj_name == 'lambert_conformal_conic':
+        central_lat = cf.get('latitude_of_projection_origin', 0)
+        # Default cutoff=-30 clips SH domains at 30°S.  Set the cutoff
+        # on the opposite side of the equator so the full domain is visible.
+        cutoff = 30 if central_lat < 0 else -30
         return ccrs.LambertConformal(
             central_longitude=cf.get('longitude_of_central_meridian', 0),
-            central_latitude=cf.get('latitude_of_projection_origin', 0),
+            central_latitude=central_lat,
             standard_parallels=cf.get('standard_parallel', []),
             false_easting=cf.get('false_easting', 0),
             false_northing=cf.get('false_northing', 0),
+            cutoff=cutoff,
         )
     elif proj_name == 'polar_stereographic':
         return ccrs.Stereographic(
@@ -83,20 +123,58 @@ def _read_grid_from_ds(ds):
     var_names = set(ds.data_var_names)
 
     if 'latitude' in coord_names or 'latitude' in var_names:
-        xlat, xlong = _read_latlon_2d(ds)
-        return xlong, xlat, None, False
+        xlat, xlong = read_latlon_2d(ds)
+        # Discard columns past the antimeridian to avoid cartopy wrapping issues
+        lon_mask = None
+        if xlong.ndim == 2 and np.any(xlong > 180):
+            lon_mask = xlong[0, :] <= 180
+            xlong = xlong[:, lon_mask]
+            xlat = xlat[:, lon_mask]
+        return xlong, xlat, None, False, lon_mask
 
     if 'y' in coord_names and 'x' in coord_names and ds.crs is not None:
         y_1d = ds['y'].data
         x_1d = ds['x'].data
         x2d, y2d = np.meshgrid(x_1d, y_1d)
-        return x2d, y2d, ds.crs, True
+        return x2d, y2d, ds.crs, True, None
 
     raise ValueError(
         "Dataset must contain either 'latitude'/'longitude' coordinates "
         "or 'y'/'x' coordinates with a CRS. "
         f"Found coords={ds.coord_names}, crs={ds.crs}"
     )
+
+
+def _map_aspect_ratio(x2d, y2d, is_projected):
+    """
+    Estimate the height/width aspect ratio of the map domain.
+
+    For projected grids uses native coordinate extents directly.
+    For geographic grids corrects longitude range for latitude.
+
+    Returns
+    -------
+    float
+        Aspect ratio (height / width). Values > 1 mean taller than wide.
+    """
+    if is_projected:
+        x_range = float(x2d.max() - x2d.min())
+        y_range = float(y2d.max() - y2d.min())
+    else:
+        y_range = float(y2d.max() - y2d.min())
+        mid_lat = np.radians((float(y2d.max()) + float(y2d.min())) / 2)
+        x_range = float(x2d.max() - x2d.min()) * abs(np.cos(mid_lat))
+
+    if x_range <= 0:
+        return 1.0
+    return y_range / x_range
+
+
+def _apply_lon_mask(data_2d, lon_mask):
+    """Discard columns past the antimeridian if needed."""
+    if lon_mask is not None:
+        return data_2d[:, lon_mask]
+    return data_2d
 
 
 def _draw_composite_layers(
@@ -223,6 +301,9 @@ def _draw_composite_layers(
         ax.add_feature(cfeature.COASTLINE, linewidth=1, edgecolor='black')
         ax.add_feature(cfeature.BORDERS, linewidth=0.5, linestyle='--', edgecolor='gray')
         gl = ax.gridlines(draw_labels=True, linewidth=0.3, alpha=0.5)
+        gl.x_inline = False
+        gl.y_inline = False
+        gl.rotate_labels = False
         gl.top_labels = gridline_labels.get('top', False)
         gl.right_labels = gridline_labels.get('right', False)
         gl.bottom_labels = gridline_labels.get('bottom', True)
@@ -282,7 +363,7 @@ def _plot_storm_composite_frame(
     mslp_levels: list = None,
     mslp_color: str = 'black',
     vector_color: str = 'black',
-    figsize: tuple = (14, 10),
+    figsize: tuple = None,
     dpi: int = 150,
     title: str = None,
 ):
@@ -325,8 +406,8 @@ def _plot_storm_composite_frame(
         Color for MSLP contour lines. Default is ``'black'``.
     vector_color : str
         Color for barbs or quiver arrows. Default is ``'black'``.
-    figsize : tuple
-        Figure size in inches.
+    figsize : tuple, optional
+        Figure size in inches. Auto-computed from domain aspect ratio if None.
     dpi : int
         Output resolution.
     title : str, optional
@@ -337,6 +418,8 @@ def _plot_storm_composite_frame(
     tuple or None
         ``(fig, ax)`` if ``output_path`` is None, otherwise None.
     """
+    if figsize is None:
+        figsize = (14, 10)
     # Convert MSLP to hPa if in Pa
     if np.nanmean(mslp) > 10000:
         mslp_hpa = mslp / 100.0
@@ -346,7 +429,7 @@ def _plot_storm_composite_frame(
     # Set up cartopy projections
     if HAS_CARTOPY:
         if is_projected and data_crs is not None:
-            map_projection = _pyproj_to_cartopy(data_crs)
+            map_projection = pyproj_to_cartopy(data_crs)
             data_transform = map_projection
         else:
             map_projection = ccrs.PlateCarree()
@@ -354,6 +437,7 @@ def _plot_storm_composite_frame(
 
         fig, ax = plt.subplots(figsize=figsize, subplot_kw={'projection': map_projection})
         plot_kwargs = {'transform': data_transform}
+
     else:
         fig, ax = plt.subplots(figsize=figsize)
         plot_kwargs = {}
@@ -432,7 +516,7 @@ def plot_storm_composite_timestep(
         raise FileNotFoundError(f"Dataset not found: {cfdb_path}")
 
     with cfdb.open_dataset(cfdb_path) as ds:
-        x2d, y2d, data_crs, is_projected = _read_grid_from_ds(ds)
+        x2d, y2d, data_crs, is_projected, lon_mask = _read_grid_from_ds(ds)
         time_values = ds['time'].data
 
         # Validate time index
@@ -440,15 +524,23 @@ def plot_storm_composite_timestep(
             raise IndexError(f"time_index {time_index} out of range [0, {len(time_values) - 1}]")
 
         # Read fields
-        vimf_u = _read_var_2d(ds, vimf_u_var, time_index)
-        vimf_v = _read_var_2d(ds, vimf_v_var, time_index)
-        pwat = _read_var_2d(ds, pwat_var, time_index)
+        vimf_u = _apply_lon_mask(_read_var_2d(ds, vimf_u_var, time_index), lon_mask)
+        vimf_v = _apply_lon_mask(_read_var_2d(ds, vimf_v_var, time_index), lon_mask)
+        pwat = _apply_lon_mask(_read_var_2d(ds, pwat_var, time_index), lon_mask)
 
         # MSLP with compute fallback
         if mslp_var == 'mslp':
-            mslp = _read_slp_from_cfdb(ds, time_index)
+            mslp = _apply_lon_mask(_read_slp_from_cfdb(ds, time_index), lon_mask)
         else:
-            mslp = _read_var_2d(ds, mslp_var, time_index)
+            mslp = _apply_lon_mask(_read_var_2d(ds, mslp_var, time_index), lon_mask)
+
+        # Mask cells where any field is NaN or holds an out-of-range fill value
+        fill_mask = _storm_field_fill_mask(pwat, mslp, vimf_u, vimf_v)
+        if np.any(fill_mask):
+            pwat = np.where(fill_mask, np.nan, pwat)
+            vimf_u = np.where(fill_mask, np.nan, vimf_u)
+            vimf_v = np.where(fill_mask, np.nan, vimf_v)
+            mslp = np.where(fill_mask, np.nan, mslp)
 
         time_str = str(time_values[time_index])
 
@@ -464,7 +556,7 @@ def plot_storm_composite(
     cfdb_path: Union[str, pathlib.Path],
     output_dir: Union[str, pathlib.Path],
     filename_prefix: str = 'storm_composite',
-    webp_path: Union[str, pathlib.Path] = None,
+    webp_path: Union[str, pathlib.Path, None] = _UNSET,
     webp_duration: int = 500,
     webp_loop: int = 0,
     webp_quality: int = 80,
@@ -521,9 +613,9 @@ def plot_storm_composite(
     output_dir = pathlib.Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if webp_path is None:
+    if webp_path is _UNSET:
         webp_path = output_dir / f'{filename_prefix}.webp'
-    else:
+    elif webp_path is not None:
         webp_path = pathlib.Path(webp_path)
 
     if not cfdb_path.exists():
@@ -532,59 +624,78 @@ def plot_storm_composite(
     png_files = []
 
     with cfdb.open_dataset(cfdb_path) as ds:
-        x2d, y2d, data_crs, is_projected = _read_grid_from_ds(ds)
+        x2d, y2d, data_crs, is_projected, lon_mask = _read_grid_from_ds(ds)
         time_values = ds['time'].data
         n_times = len(time_values)
 
-        # Determine time range
+        # Determine matching time range (contiguous, since time_values is monotonic ascending)
         if start_time is not None:
             start_time = np.datetime64(start_time)
         if end_time is not None:
             end_time = np.datetime64(end_time)
 
+        match = np.ones(n_times, dtype=bool)
+        if start_time is not None:
+            match &= time_values >= start_time
+        if end_time is not None:
+            match &= time_values <= end_time
+        matching_idx = np.where(match)[0]
+        if matching_idx.size == 0:
+            return png_files, webp_path
+        t_lo = int(matching_idx[0])
+        t_hi = int(matching_idx[-1]) + 1
+        t_slice = slice(t_lo, t_hi)
+
+        # Bulk-read each field as a single (n_t, ny, nx) block to avoid
+        # re-decompressing the same multi-timestep cfdb chunk per frame.
+        pwat_block = _read_var_3d_time_slice(ds, pwat_var, t_slice)
+        vimf_u_block = _read_var_3d_time_slice(ds, vimf_u_var, t_slice)
+        vimf_v_block = _read_var_3d_time_slice(ds, vimf_v_var, t_slice)
+
+        if mslp_var == 'mslp':
+            mslp_block = _read_slp_block_from_cfdb(ds, t_slice)
+        else:
+            mslp_block = _read_var_3d_time_slice(ds, mslp_var, t_slice)
+
+        if lon_mask is not None:
+            pwat_block = pwat_block[:, :, lon_mask]
+            vimf_u_block = vimf_u_block[:, :, lon_mask]
+            vimf_v_block = vimf_v_block[:, :, lon_mask]
+            mslp_block = mslp_block[:, :, lon_mask]
+
+        # Mask cells where any field is NaN or holds an out-of-range fill value,
+        # across the whole block, so pwat_levels reflect only valid data.
+        full_mask = _storm_field_fill_mask(pwat_block, mslp_block, vimf_u_block, vimf_v_block)
+        if np.any(full_mask):
+            pwat_block = np.where(full_mask, np.nan, pwat_block)
+            vimf_u_block = np.where(full_mask, np.nan, vimf_u_block)
+            vimf_v_block = np.where(full_mask, np.nan, vimf_v_block)
+            mslp_block = np.where(full_mask, np.nan, mslp_block)
+
         # Compute consistent PWAT levels across all frames if not provided
         if 'pwat_levels' not in plot_kwargs or plot_kwargs.get('pwat_levels') is None:
-            global_min = np.inf
-            global_max = -np.inf
-            for t in range(n_times):
-                t_val = time_values[t]
-                if start_time is not None and t_val < start_time:
-                    continue
-                if end_time is not None and t_val > end_time:
-                    continue
-                pwat_t = _read_var_2d(ds, pwat_var, t)
-                global_min = min(global_min, np.nanmin(pwat_t))
-                global_max = max(global_max, np.nanmax(pwat_t))
-            pmin = max(0, np.floor(global_min))
-            pmax = np.ceil(global_max)
+            if np.any(np.isfinite(pwat_block)):
+                pmin = max(0.0, float(np.floor(np.nanmin(pwat_block))))
+                pmax = float(np.ceil(np.nanmax(pwat_block)))
+            else:
+                pmin, pmax = 0.0, 0.0
             if pmax > pmin:
                 plot_kwargs['pwat_levels'] = np.linspace(pmin, pmax, 15)
             else:
                 plot_kwargs['pwat_levels'] = np.linspace(0, 80, 17)
 
-        for t in range(n_times):
+        for t in matching_idx:
+            t = int(t)
             t_val = time_values[t]
-
-            if start_time is not None and t_val < start_time:
-                continue
-            if end_time is not None and t_val > end_time:
-                continue
-
-            # Read fields
-            vimf_u = _read_var_2d(ds, vimf_u_var, t)
-            vimf_v = _read_var_2d(ds, vimf_v_var, t)
-            pwat = _read_var_2d(ds, pwat_var, t)
-
-            if mslp_var == 'mslp':
-                mslp = _read_slp_from_cfdb(ds, t)
-            else:
-                mslp = _read_var_2d(ds, mslp_var, t)
+            local_i = t - t_lo
 
             time_str = str(t_val)
-            frame_path = output_dir / f'{filename_prefix}_t{t:03d}.png'
+            frame_path = output_dir / f'{filename_prefix}_{np.datetime_as_string(t_val, unit="h")}.png'
 
             _plot_storm_composite_frame(
-                x2d, y2d, vimf_u, vimf_v, pwat, mslp,
+                x2d, y2d,
+                vimf_u_block[local_i], vimf_v_block[local_i],
+                pwat_block[local_i], mslp_block[local_i],
                 data_crs=data_crs, is_projected=is_projected,
                 time_str=time_str, output_path=frame_path,
                 **plot_kwargs,
@@ -592,7 +703,8 @@ def plot_storm_composite(
             png_files.append(frame_path)
 
     # Assemble animated WebP
-    _assemble_webp(png_files, webp_path, webp_duration, webp_loop, webp_quality)
+    if webp_path is not None:
+        _assemble_webp(png_files, webp_path, webp_duration, webp_loop, webp_quality)
 
     return png_files, webp_path
 
@@ -625,7 +737,7 @@ def _plot_storm_composite_comparison_frame(
     mslp_levels: list = None,
     mslp_color: str = 'black',
     vector_color: str = 'black',
-    figsize: tuple = (24, 10),
+    figsize: tuple = None,
     dpi: int = 150,
     title: str = None,
 ):
@@ -672,8 +784,8 @@ def _plot_storm_composite_comparison_frame(
         Color for MSLP contour lines.
     vector_color : str
         Color for barbs or quiver arrows.
-    figsize : tuple
-        Figure size in inches. Default is ``(24, 10)``.
+    figsize : tuple, optional
+        Figure size in inches. Auto-computed from domain aspect ratio if None.
     dpi : int
         Output resolution.
     title : str, optional
@@ -697,27 +809,39 @@ def _plot_storm_composite_comparison_frame(
         else:
             pwat_levels = np.linspace(0, 80, 17)
 
+    # Auto-compute figsize and wspace from domain aspect ratio
+    map_aspect = _map_aspect_ratio(x2d_a, y2d_a, is_projected_a)
+    fig_height = 10
+    if figsize is None:
+        panel_width = fig_height / max(map_aspect, 0.3)
+        figsize = (2 * panel_width + 3, fig_height)
+
+    wspace = 0.02
+
     # Set up projections for each panel
     if HAS_CARTOPY:
         if is_projected_a and data_crs_a is not None:
-            proj_a = _pyproj_to_cartopy(data_crs_a)
+            proj_a = pyproj_to_cartopy(data_crs_a)
             transform_a = proj_a
         else:
             proj_a = ccrs.PlateCarree()
             transform_a = ccrs.PlateCarree()
 
         if is_projected_b and data_crs_b is not None:
-            proj_b = _pyproj_to_cartopy(data_crs_b)
+            proj_b = pyproj_to_cartopy(data_crs_b)
             transform_b = proj_b
         else:
             proj_b = ccrs.PlateCarree()
             transform_b = ccrs.PlateCarree()
 
+        from matplotlib.gridspec import GridSpec
         fig = plt.figure(figsize=figsize)
-        ax_a = fig.add_subplot(1, 2, 1, projection=proj_a)
-        ax_b = fig.add_subplot(1, 2, 2, projection=proj_b)
+        gs = GridSpec(1, 2, figure=fig, wspace=wspace)
+        ax_a = fig.add_subplot(gs[0, 0], projection=proj_a)
+        ax_b = fig.add_subplot(gs[0, 1], projection=proj_b)
         plot_kwargs_a = {'transform': transform_a}
         plot_kwargs_b = {'transform': transform_b}
+
     else:
         fig, (ax_a, ax_b) = plt.subplots(1, 2, figsize=figsize)
         plot_kwargs_a = {}
@@ -827,8 +951,8 @@ def plot_storm_composite_comparison_timestep(
         raise FileNotFoundError(f"Dataset not found: {cfdb_path_b}")
 
     with cfdb.open_dataset(cfdb_path_a) as ds_a, cfdb.open_dataset(cfdb_path_b) as ds_b:
-        x2d_a, y2d_a, data_crs_a, is_projected_a = _read_grid_from_ds(ds_a)
-        x2d_b, y2d_b, data_crs_b, is_projected_b = _read_grid_from_ds(ds_b)
+        x2d_a, y2d_a, data_crs_a, is_projected_a, lon_mask_a = _read_grid_from_ds(ds_a)
+        x2d_b, y2d_b, data_crs_b, is_projected_b, lon_mask_b = _read_grid_from_ds(ds_b)
 
         times_a = ds_a['time'].data
         times_b = ds_b['time'].data
@@ -842,22 +966,32 @@ def plot_storm_composite_comparison_timestep(
         t_val, idx_a, idx_b = matched[time_index]
 
         # Read fields from dataset A
-        vimf_u_a = _read_var_2d(ds_a, vimf_u_var_a, idx_a)
-        vimf_v_a = _read_var_2d(ds_a, vimf_v_var_a, idx_a)
-        pwat_a = _read_var_2d(ds_a, pwat_var_a, idx_a)
+        vimf_u_a = _apply_lon_mask(_read_var_2d(ds_a, vimf_u_var_a, idx_a), lon_mask_a)
+        vimf_v_a = _apply_lon_mask(_read_var_2d(ds_a, vimf_v_var_a, idx_a), lon_mask_a)
+        pwat_a = _apply_lon_mask(_read_var_2d(ds_a, pwat_var_a, idx_a), lon_mask_a)
         if mslp_var_a == 'mslp':
-            mslp_a = _read_slp_from_cfdb(ds_a, idx_a)
+            mslp_a = _apply_lon_mask(_read_slp_from_cfdb(ds_a, idx_a), lon_mask_a)
         else:
-            mslp_a = _read_var_2d(ds_a, mslp_var_a, idx_a)
+            mslp_a = _apply_lon_mask(_read_var_2d(ds_a, mslp_var_a, idx_a), lon_mask_a)
+        fill_mask_a = np.isnan(pwat_a)
+        if np.any(fill_mask_a):
+            vimf_u_a = np.where(fill_mask_a, np.nan, vimf_u_a)
+            vimf_v_a = np.where(fill_mask_a, np.nan, vimf_v_a)
+            mslp_a = np.where(fill_mask_a, np.nan, mslp_a)
 
         # Read fields from dataset B
-        vimf_u_b = _read_var_2d(ds_b, vimf_u_var_b, idx_b)
-        vimf_v_b = _read_var_2d(ds_b, vimf_v_var_b, idx_b)
-        pwat_b = _read_var_2d(ds_b, pwat_var_b, idx_b)
+        vimf_u_b = _apply_lon_mask(_read_var_2d(ds_b, vimf_u_var_b, idx_b), lon_mask_b)
+        vimf_v_b = _apply_lon_mask(_read_var_2d(ds_b, vimf_v_var_b, idx_b), lon_mask_b)
+        pwat_b = _apply_lon_mask(_read_var_2d(ds_b, pwat_var_b, idx_b), lon_mask_b)
         if mslp_var_b == 'mslp':
-            mslp_b = _read_slp_from_cfdb(ds_b, idx_b)
+            mslp_b = _apply_lon_mask(_read_slp_from_cfdb(ds_b, idx_b), lon_mask_b)
         else:
-            mslp_b = _read_var_2d(ds_b, mslp_var_b, idx_b)
+            mslp_b = _apply_lon_mask(_read_var_2d(ds_b, mslp_var_b, idx_b), lon_mask_b)
+        fill_mask_b = np.isnan(pwat_b)
+        if np.any(fill_mask_b):
+            vimf_u_b = np.where(fill_mask_b, np.nan, vimf_u_b)
+            vimf_v_b = np.where(fill_mask_b, np.nan, vimf_v_b)
+            mslp_b = np.where(fill_mask_b, np.nan, mslp_b)
 
         time_str = str(t_val)
 
@@ -879,7 +1013,7 @@ def plot_storm_composite_comparison(
     filename_prefix: str = 'storm_composite_comparison',
     label_a: str = 'Model A',
     label_b: str = 'Model B',
-    webp_path: Union[str, pathlib.Path] = None,
+    webp_path: Union[str, pathlib.Path, None] = _UNSET,
     webp_duration: int = 500,
     webp_loop: int = 0,
     webp_quality: int = 80,
@@ -947,9 +1081,9 @@ def plot_storm_composite_comparison(
     output_dir = pathlib.Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if webp_path is None:
+    if webp_path is _UNSET:
         webp_path = output_dir / f'{filename_prefix}.webp'
-    else:
+    elif webp_path is not None:
         webp_path = pathlib.Path(webp_path)
 
     if not cfdb_path_a.exists():
@@ -960,8 +1094,8 @@ def plot_storm_composite_comparison(
     png_files = []
 
     with cfdb.open_dataset(cfdb_path_a) as ds_a, cfdb.open_dataset(cfdb_path_b) as ds_b:
-        x2d_a, y2d_a, data_crs_a, is_projected_a = _read_grid_from_ds(ds_a)
-        x2d_b, y2d_b, data_crs_b, is_projected_b = _read_grid_from_ds(ds_b)
+        x2d_a, y2d_a, data_crs_a, is_projected_a, lon_mask_a = _read_grid_from_ds(ds_a)
+        x2d_b, y2d_b, data_crs_b, is_projected_b, lon_mask_b = _read_grid_from_ds(ds_b)
 
         times_a = ds_a['time'].data
         times_b = ds_b['time'].data
@@ -978,7 +1112,7 @@ def plot_storm_composite_comparison(
         if 'pwat_levels' not in plot_kwargs or plot_kwargs.get('pwat_levels') is None:
             global_min = np.inf
             global_max = -np.inf
-            for t_val, idx_a, idx_b in matched:
+            for _t_val, idx_a, idx_b in matched:
                 pwat_t_a = _read_var_2d(ds_a, pwat_var_a, idx_a)
                 pwat_t_b = _read_var_2d(ds_b, pwat_var_b, idx_b)
                 global_min = min(global_min, np.nanmin(pwat_t_a), np.nanmin(pwat_t_b))
@@ -990,27 +1124,37 @@ def plot_storm_composite_comparison(
             else:
                 plot_kwargs['pwat_levels'] = np.linspace(0, 80, 17)
 
-        for i, (t_val, idx_a, idx_b) in enumerate(matched):
+        for _i, (t_val, idx_a, idx_b) in enumerate(matched):
             # Read fields from dataset A
-            vimf_u_a = _read_var_2d(ds_a, vimf_u_var_a, idx_a)
-            vimf_v_a = _read_var_2d(ds_a, vimf_v_var_a, idx_a)
-            pwat_a = _read_var_2d(ds_a, pwat_var_a, idx_a)
+            vimf_u_a = _apply_lon_mask(_read_var_2d(ds_a, vimf_u_var_a, idx_a), lon_mask_a)
+            vimf_v_a = _apply_lon_mask(_read_var_2d(ds_a, vimf_v_var_a, idx_a), lon_mask_a)
+            pwat_a = _apply_lon_mask(_read_var_2d(ds_a, pwat_var_a, idx_a), lon_mask_a)
             if mslp_var_a == 'mslp':
-                mslp_a = _read_slp_from_cfdb(ds_a, idx_a)
+                mslp_a = _apply_lon_mask(_read_slp_from_cfdb(ds_a, idx_a), lon_mask_a)
             else:
-                mslp_a = _read_var_2d(ds_a, mslp_var_a, idx_a)
+                mslp_a = _apply_lon_mask(_read_var_2d(ds_a, mslp_var_a, idx_a), lon_mask_a)
+            fill_mask_a = np.isnan(pwat_a)
+            if np.any(fill_mask_a):
+                vimf_u_a = np.where(fill_mask_a, np.nan, vimf_u_a)
+                vimf_v_a = np.where(fill_mask_a, np.nan, vimf_v_a)
+                mslp_a = np.where(fill_mask_a, np.nan, mslp_a)
 
             # Read fields from dataset B
-            vimf_u_b = _read_var_2d(ds_b, vimf_u_var_b, idx_b)
-            vimf_v_b = _read_var_2d(ds_b, vimf_v_var_b, idx_b)
-            pwat_b = _read_var_2d(ds_b, pwat_var_b, idx_b)
+            vimf_u_b = _apply_lon_mask(_read_var_2d(ds_b, vimf_u_var_b, idx_b), lon_mask_b)
+            vimf_v_b = _apply_lon_mask(_read_var_2d(ds_b, vimf_v_var_b, idx_b), lon_mask_b)
+            pwat_b = _apply_lon_mask(_read_var_2d(ds_b, pwat_var_b, idx_b), lon_mask_b)
             if mslp_var_b == 'mslp':
-                mslp_b = _read_slp_from_cfdb(ds_b, idx_b)
+                mslp_b = _apply_lon_mask(_read_slp_from_cfdb(ds_b, idx_b), lon_mask_b)
             else:
-                mslp_b = _read_var_2d(ds_b, mslp_var_b, idx_b)
+                mslp_b = _apply_lon_mask(_read_var_2d(ds_b, mslp_var_b, idx_b), lon_mask_b)
+            fill_mask_b = np.isnan(pwat_b)
+            if np.any(fill_mask_b):
+                vimf_u_b = np.where(fill_mask_b, np.nan, vimf_u_b)
+                vimf_v_b = np.where(fill_mask_b, np.nan, vimf_v_b)
+                mslp_b = np.where(fill_mask_b, np.nan, mslp_b)
 
             time_str = str(t_val)
-            frame_path = output_dir / f'{filename_prefix}_t{i:03d}.png'
+            frame_path = output_dir / f'{filename_prefix}_{np.datetime_as_string(t_val, unit="h")}.png'
 
             _plot_storm_composite_comparison_frame(
                 x2d_a, y2d_a, vimf_u_a, vimf_v_a, pwat_a, mslp_a,
@@ -1024,7 +1168,8 @@ def plot_storm_composite_comparison(
             png_files.append(frame_path)
 
     # Assemble animated WebP
-    _assemble_webp(png_files, webp_path, webp_duration, webp_loop, webp_quality)
+    if webp_path is not None:
+        _assemble_webp(png_files, webp_path, webp_duration, webp_loop, webp_quality)
 
     return png_files, webp_path
 

@@ -2,12 +2,11 @@
 I/O classes for reading WRF files and writing NetCDF4 output.
 """
 import pathlib
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Union
 
 import h5py
 import numpy as np
-
 
 # NetCDF4 dimension scale attribute names
 CLASS = 'CLASS'
@@ -578,7 +577,7 @@ class NetCDF4Writer:
         """
         self.h5.attrs['Conventions'] = np.bytes_(conventions)
         if history is None:
-            history = f'Created {datetime.now().isoformat()} by modverif'
+            history = f'Created {datetime.now(tz=timezone.utc).isoformat()} by modverif'
         self.h5.attrs['history'] = np.bytes_(history)
 
         for key, value in kwargs.items():

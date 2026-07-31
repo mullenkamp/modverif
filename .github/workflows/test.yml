@@ -1,5 +1,13 @@
-# This workflow will install Python dependencies, run tests and lint with a variety of Python versions
-# For more information see: https://help.github.com/actions/language-and-framework-guides/using-python-with-github-actions
+# The pipeline. Runs on pushes to `dev` and PRs to `main`.
+#
+# Two jobs, deliberately separate: a lint failure and a "tests broke on 3.10" failure are different
+# problems and should show as different red checks.
+#
+# History worth knowing (2026-07-31): this repo also carried `build.yml`, a workflow-template
+# leftover from repo creation that was disabled in Actions and had never run -- it invoked two hatch
+# scripts that did not exist. It was mistaken for the real pipeline, "repaired", and then deleted
+# once that was cleared up. If you find yourself adding a second workflow that duplicates this
+# matrix, that is the story you are about to repeat.
 
 name: Python testing
 
@@ -10,8 +18,28 @@ on:
     branches: [ main ]
 
 jobs:
-  build:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    # Version-bounded on purpose. A floating linter promotes new rules into the selected families on
+    # any release and turns this red with no repo change -- the config in pyproject.toml was measured
+    # clean at 0.15.0. Keep this in step with the `ruff` bound in [tool.hatch.envs.lint].
+    - name: Install ruff
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install 'ruff~=0.15.0'
+    # Scoped at `modverif` so it does not lint conda/, docs/ or a generated site/ tree.
+    # Rule selection and the reasoning behind it: [tool.ruff.lint] in pyproject.toml.
+    - name: Lint with ruff
+      run: |
+        ruff check modverif
 
+  test:
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -26,15 +54,8 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        python -m pip install flake8 pytest
-        if [ -f requirements_tests.txt ]; then pip install -r requirements_tests.txt; fi
+        python -m pip install pytest
         pip install .
-#     - name: Lint with flake8
-#       run: |
-#         # stop the build if there are Python syntax errors or undefined names
-#         flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
-#         # exit-zero treats all errors as warnings. The GitHub editor is 127 chars wide
-#         flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
     - name: Test with pytest
       run: |
         pytest

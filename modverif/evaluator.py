@@ -2,7 +2,7 @@
 Centralized orchestrator for model evaluation using cfdb datasets.
 """
 import pathlib
-from typing import Union, List, Tuple
+from typing import List, Tuple, Union
 
 import cfdb
 import numpy as np
@@ -326,11 +326,11 @@ class Evaluator:
             cfdb.open_dataset(output_path, 'n', dataset_type='grid') as ds_out,
         ):
             # Create output coordinates
-            time_coord = ds_out.create.coord.time(data=self.time_values)
+            ds_out.create.coord.time(data=self.time_values)
 
             if agg_type == 'cell':
-                y_coord = ds_out.create.coord.y(data=self.y_values.astype('float32'))
-                x_coord = ds_out.create.coord.x(data=self.x_values.astype('float32'))
+                ds_out.create.coord.y(data=self.y_values.astype('float32'))
+                ds_out.create.coord.x(data=self.x_values.astype('float32'))
                 out_coord_names = ('time', 'y', 'x')
                 out_chunk_shape = (1, self.n_y, self.n_x)
             else:
@@ -396,7 +396,7 @@ class Evaluator:
                 n_dims = len(s_var.shape)
 
                 for out_t, (s_t_idx, t_t_idx) in enumerate(
-                    zip(self._source_time_indices, self._test_time_indices)
+                    zip(self._source_time_indices, self._test_time_indices, strict=True)
                 ):
                     # Read a single timestep and squeeze to 2D (y, x)
                     # cfdb preserves all dimensions on integer indexing,
@@ -542,9 +542,9 @@ class Evaluator:
             cfdb.open_dataset(self.test_path) as ds_t,
             cfdb.open_dataset(output_path, 'n', dataset_type='grid') as ds_out,
         ):
-            time_coord = ds_out.create.coord.time(data=self.time_values)
+            ds_out.create.coord.time(data=self.time_values)
             scale_data = np.array(neighborhood_sizes, dtype='int32')
-            scale_coord = ds_out.create.coord.generic('scale', data=scale_data, dtype='int32')
+            ds_out.create.coord.generic('scale', data=scale_data, dtype='int32')
 
             ds_out.attrs['source_path'] = str(self.source_path)
             ds_out.attrs['test_path'] = str(self.test_path)
@@ -572,7 +572,7 @@ class Evaluator:
                 n_dims = len(s_var.shape)
 
                 for out_t, (s_t_idx, t_t_idx) in enumerate(
-                    zip(self._source_time_indices, self._test_time_indices)
+                    zip(self._source_time_indices, self._test_time_indices, strict=True)
                 ):
                     if n_dims == 4:
                         s_data = s_var[(int(s_t_idx), height_idx, self.y_slice, self.x_slice)].data[0, 0]
@@ -634,7 +634,7 @@ class Evaluator:
             cfdb.open_dataset(self.test_path) as ds_t,
             cfdb.open_dataset(output_path, 'n', dataset_type='grid') as ds_out,
         ):
-            time_coord = ds_out.create.coord.time(data=self.time_values)
+            ds_out.create.coord.time(data=self.time_values)
             metric_indices = np.arange(len(metrics), dtype='int32')
             metric_coord = ds_out.create.coord.generic('metric', data=metric_indices, dtype='int32')
             metric_coord.attrs['flag_meanings'] = ' '.join(metrics)
@@ -660,7 +660,7 @@ class Evaluator:
             n_dims = len(su_var.shape)
 
             for out_t, (s_t_idx, t_t_idx) in enumerate(
-                zip(self._source_time_indices, self._test_time_indices)
+                zip(self._source_time_indices, self._test_time_indices, strict=True)
             ):
                 if n_dims == 4:
                     su = su_var[(int(s_t_idx), height_idx, self.y_slice, self.x_slice)].data[0, 0]
@@ -746,7 +746,7 @@ class Evaluator:
                 t_means = np.zeros(self.n_times, dtype=np.float64)
 
                 for out_t, (s_t_idx, t_t_idx) in enumerate(
-                    zip(self._source_time_indices, self._test_time_indices)
+                    zip(self._source_time_indices, self._test_time_indices, strict=True)
                 ):
                     if n_dims == 4:
                         s_data = s_var[(int(s_t_idx), height_idx, self.y_slice, self.x_slice)].data[0, 0]
@@ -769,7 +769,7 @@ class Evaluator:
         # Write output
         with cfdb.open_dataset(output_path, 'n', dataset_type='grid') as ds_out:
             hour_data = np.arange(24, dtype='int32')
-            hour_coord = ds_out.create.coord.generic('hour', data=hour_data, dtype='int32')
+            ds_out.create.coord.generic('hour', data=hour_data, dtype='int32')
             metric_indices = np.arange(len(metrics), dtype='int32')
             metric_coord = ds_out.create.coord.generic('metric', data=metric_indices, dtype='int32')
             metric_coord.attrs['flag_meanings'] = ' '.join(metrics)

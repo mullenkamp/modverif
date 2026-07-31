@@ -11,10 +11,15 @@ classifiers = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-  'cfdb',
+  # Floor, not a pin: modverif is a library and should not pin its consumers. But it must not be
+  # unbounded either -- while `cfdb` was undeclared, CI resolved to PyPI latest (0.9.5) while both
+  # consumers hard-pinned 0.8.5, so the suite was green against a version nobody actually ran.
+  # 0.9.5 is the floor because 0.9.x changed indexing semantics, int-packed fillvalue handling and
+  # calendar-anchored groupby -- a consumer on 0.8.x is not running the code this is tested against.
+  'cfdb>=0.9.5',
   'pyproj',
   'h5py',
-  'rechunkit>=0.2.1',
+  'rechunkit>=0.6.0',
   'numpy>2',
   'matplotlib',
   'cartopy',
@@ -48,7 +53,10 @@ allow-direct-references = true
 # path = "modverif/__init__.py"
 
 [tool.hatch.envs.default]
-python = "3.11"
+# NO `python` pin here: it would make the `envs.all` matrix below decorative, since a pinned
+# interpreter is resolved regardless of which one the matrix asks for. CI does not use hatch --
+# .github/workflows/test.yml installs via setup-python + `pip install .` -- but `hatch run all:test`
+# should mean what it says. The suite passes on 3.10 and 3.12 (verified).
 dependencies = [
     "spyder-kernels==2.5.2",
     "black",
@@ -69,17 +77,22 @@ detached = true
 dependencies = [
   "black>=23.1.0",
   "mypy>=1.0.0",
-  "ruff>=0.0.243",
+  # BOUNDED, not floating. A linter that floats can promote new rules into the selected families
+  # on any release and turn CI red with no repo change -- which is the drift this config is
+  # recovering from. The zero-finding state below was measured on ruff 0.15.0.
+  "ruff~=0.15.0",
 ]
 [tool.hatch.envs.lint.scripts]
-typing = "mypy --install-types --non-interactive {args:src/modverif tests}"
-style = [
-  "ruff {args:.}",
-  "black --check --diff {args:.}",
-]
+typing = "mypy --install-types --non-interactive {args:modverif}"
+# `style` is the local equivalent of CI's lint job (.github/workflows/test.yml) -- keep the two in
+# step, including the ruff bound above. Ruff-only on purpose: `black --check` would reformat 18 of
+# 20 files (~1230 lines). Adopting a formatter wholesale is a separate decision -- `fmt` below is
+# there for when it is taken. Scoped at `modverif` so it does not lint conda/, docs/ or the
+# generated site/ tree.
+style = "ruff check {args:modverif}"
 fmt = [
-  "black {args:.}",
-  "ruff --fix {args:.}",
+  "black {args:modverif}",
+  "ruff check --fix {args:modverif}",
   "style",
 ]
 all = [
@@ -88,8 +101,17 @@ all = [
 ]
 
 [tool.hatch.envs.default.scripts]
-test = "pytest {args:tests}"
-test-cov = "coverage run -m pytest {args:tests}"
+test = "pytest {args:modverif/tests}"
+test-cov = "coverage run -m pytest {args:modverif/tests}"
+# Local convenience for producing coverage.xml; nothing in CI consumes it today.
+# `coverage combine` is NOT optional: [tool.coverage.run] sets parallel = true, so `coverage run`
+# writes a machine/pid-suffixed data file, and without the combine `coverage xml` reports
+# "No data to report" and exits 1 -- with every test passing.
+test-cov-xml = [
+  "coverage run -m pytest {args:modverif/tests}",
+  "- coverage combine",
+  "coverage xml",
+]
 cov-report = [
   "- coverage combine",
   "coverage report",
@@ -107,71 +129,91 @@ line-length = 120
 skip-string-normalization = true
 
 [tool.ruff]
-target-version = "py311"
+# No `target-version`: it said py311 while `requires-python` says >=3.10, so lint claimed a floor
+# the package does not have. Ruff infers it from requires-python.
 line-length = 120
+
+[tool.ruff.lint]
+# This list is DELIBERATELY NARROW, and CI gates on it being clean
+# (.github/workflows/test.yml, the `lint` job).
+#
+# The template default selected 25 rule families and produced 2727 findings, which is the same as
+# no linting at all -- nobody reads 2727. Worse, 76% of it was configuration fighting this
+# project's own settings: `Q` demanded double quotes while [tool.black] sets
+# skip-string-normalization, and per-file-ignores pointed at "tests/**/*" while the tests live in
+# modverif/tests, so the pytest `assert` exemption never applied. Fixing the config and keeping
+# only rules that catch defects leaves 72, which is a list someone can actually clear.
+#
+# Adding a family back is fine -- but do it deliberately, and clear its findings in the same
+# change, or the gate goes back to being decorative.
 select = [
-  "A",
-  "ARG",
-  "B",
-  "C",
-  "DTZ",
-  "E",
-  "EM",
-  "F",
-  "FBT",
-  "I",
-  "ICN",
-  "ISC",
-  "N",
-  "PLC",
-  "PLE",
-  "PLR",
-  "PLW",
-  "Q",
-  "RUF",
-  "S",
-  "T",
-  "TID",
-  "UP",
-  "W",
-  "YTT",
+  "F",     # pyflakes -- undefined names, unused imports/variables. The core.
+  "E",     # pycodestyle errors
+  "W",     # pycodestyle warnings
+  "B",     # bugbear -- real bug patterns; B905 (zip without strict) is why this list exists
+  "I",     # import sorting
+  "PLE",   # pylint errors (not the refactor/convention/warning tiers)
+  "DTZ",   # naive datetimes
+  "ICN",   # conventional import aliases (np, pd, ...)
+  "C4",    # comprehension misuse -- NOT bare "C", which pulls in mccabe complexity
+  "ISC",   # implicit string concatenation
+  "A",     # shadowing builtins
+  "YTT",   # sys.version misuse
+  "T10",   # forgotten breakpoints -- NOT bare "T", which also bans print()
+  "S",     # bandit. Zero findings in library code today; earns its place if subprocess/pickle
+           # /yaml ever appear, at no present cost.
 ]
+# Deliberately NOT selected -- style opinions, not defects:
+#   Q       contradicts [tool.black] skip-string-normalization (1795 findings)
+#   EM      demands exception strings be pre-assigned to a variable (77)
+#   PLR     magic-value comparisons etc.; PLR2004 alone is 105
+#   FBT     boolean-trap; this API takes boolean kwargs on purpose
+#   N       N806 flags `R = 6371.0` -- wrong convention for physics code
+#   ARG     unused arguments; normal in matplotlib/callback signatures
+#   TID     relative-import ban, already a non-issue here
+#   PLC     PLC0415 flags the deliberate lazy cartopy imports
+#   PLW     3 stylistic findings, all loop-variable reuse
+#   UP      149 pep604/585 modernisations -- a clean mechanical commit of its own
+#   RUF     RUF013 implicit-Optional (97) is annotation debt, a subset of the deferred mypy work;
+#           the two belong in the same future change rather than one gated and one not
 ignore = [
   # Allow non-abstract empty methods in abstract base classes
   "B027",
-  # Allow boolean positional values in function calls, like `dict.get(... True)`
-  "FBT003",
-  # Ignore checks for possible passwords
-  "S105", "S106", "S107",
   # Ignore complexity
-  "C901", "PLR0911", "PLR0912", "PLR0913", "PLR0915",
+  "C901",
 ]
 unfixable = [
-  # Don't touch unused imports
+  # Don't touch unused imports -- `modverif/__init__.py` re-exports the public API, and an
+  # autofix would delete the names downstream code imports.
   "F401",
 ]
 
-[tool.ruff.isort]
+[tool.ruff.lint.isort]
 known-first-party = ["modverif"]
 
-[tool.ruff.flake8-tidy-imports]
+[tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "all"
 
-[tool.ruff.per-file-ignores]
-# Tests can use magic values, assertions, and relative imports
-"tests/**/*" = ["PLR2004", "S101", "TID252"]
+[tool.ruff.lint.per-file-ignores]
+# Inert under the narrow `select` above -- none of these families is selected. Kept as
+# belt-and-braces for if the list ever widens, since every one of them is normal in test code.
+"modverif/tests/**" = ["PLR2004", "S101", "TID252", "ARG", "FBT", "N806", "PLC0415"]
+# utest.py is a hand-run scratch script, not collected by pytest, with a hardcoded absolute
+# sys.path append. Exempted rather than fixed -- whether it should exist at all is a lifecycle
+# call for its owner, tracked in wrf-model-eval's OPEN_WORK.md.
+"modverif/tests/utest.py" = ["E402", "F401"]
 
 [tool.coverage.run]
-source_pkgs = ["modverif", "tests"]
+# "tests" was a second source_pkg that is not an importable package here -- it emitted
+# `CoverageWarning: Module tests was never imported` on every run.
+source_pkgs = ["modverif"]
 branch = true
 parallel = true
-omit = [
-  "src/modverif/__about__.py",
-]
 
 [tool.coverage.paths]
-modverif = ["src/modverif", "*/modverif/src/modverif"]
-tests = ["tests", "*/modverif/tests"]
+# These pointed at a `src/` layout that has never existed in this repo -- a hatchling-template
+# leftover, the same root cause as the mypy target and the coverage omit that were also wrong.
+modverif = ["modverif", "*/modverif/modverif"]
 
 [tool.coverage.report]
 exclude_lines = [

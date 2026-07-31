@@ -3,18 +3,18 @@ Tests for modverif.metrics module.
 """
 import numpy as np
 import pytest
+
 from modverif.metrics import (
-    compute_ne,
-    compute_ane,
-    compute_rse,
-    compute_bias,
-    compute_pearson_correlation,
-    compute_ne_domain,
-    compute_ane_domain,
-    compute_rmse_domain,
-    compute_bias_domain,
     ContingencyTable,
+    compute_ane,
+    compute_bias,
+    compute_bias_domain,
+    compute_ne,
+    compute_ne_domain,
+    compute_pearson_correlation,
+    compute_rse,
 )
+
 
 class TestComputeNE:
     """Tests for compute_ne function."""

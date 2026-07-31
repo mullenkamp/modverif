@@ -3,23 +3,21 @@ Tests for modverif.composite module.
 
 Unit tests for time alignment and smoke tests for composite plotting functions.
 """
+import matplotlib as mpl
 import numpy as np
 import pytest
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
 
+mpl.use('Agg')
 import cfdb
+import matplotlib.pyplot as plt
 
 from modverif.composite import (
     _align_times,
     _draw_composite_layers,
-    _plot_storm_composite_frame,
     _plot_storm_composite_comparison_frame,
-    plot_storm_composite_comparison_timestep,
     plot_storm_composite_comparison,
+    plot_storm_composite_comparison_timestep,
 )
-
 
 # --- Synthetic data helpers ---
 
