@@ -82,3 +82,15 @@ Any of the following metrics grouped by hour-of-day (0--23):
 `bias`, `rmse`, `mae`, `pearson`
 
 Supports a `utc_offset` parameter for local time conversion.
+
+
+## API
+
+Full signatures for every function in `modverif.metrics`, including
+`compute_residual_skill_score` (residuals rather than model/obs pairs, and an **RMSE**-ratio
+rather than the more common MSE-ratio skill score).
+
+::: modverif.metrics
+    options:
+      show_root_heading: false
+      show_source: false

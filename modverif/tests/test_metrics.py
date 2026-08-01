@@ -129,3 +129,123 @@ class TestContingencyTable:
     def test_bias(self, sample_table):
         # Bias = (40 + 10) / (40 + 20) = 50/60
         assert sample_table.bias() == pytest.approx(50/60)
+
+
+# ================================================================ the two lag conventions, pinned
+# These exist because the library now contains TWO cross-correlation functions that compute the same
+# physical quantity with OPPOSITE sign conventions. That is deliberate -- published results depend on
+# both -- but it is exactly the kind of thing a later "cleanup" unifies, silently inverting every
+# timing conclusion drawn from one of them.
+def _shifted_pair(shift, n=300):
+    """An observation series and a model series in which the MODEL happens `shift` steps LATER."""
+    base = np.sin(np.arange(n) / 9.0) + 0.4 * np.sin(np.arange(n) / 3.1)
+    return base, np.roll(base, shift)
+
+
+def test_the_two_lag_functions_disagree_on_sign_and_that_is_intentional():
+    from modverif.metrics import compute_lagged_correlation, compute_xcorr_best_lag
+
+    obs, model = _shifted_pair(+5)               # the model is 5 steps LATE
+
+    best_lag, _, _, _ = compute_xcorr_best_lag(model, obs, 24, min_pairs=10)
+    assert best_lag == +5, 'compute_xcorr_best_lag: positive must mean the MODEL IS LATER'
+
+    lags, corrs = compute_lagged_correlation(model, obs, max_lag=24)
+    assert int(lags[int(np.nanargmax(corrs))]) == -5, (
+        'compute_lagged_correlation: positive means the model LEADS, so a late model is negative')
+
+
+def test_the_lag_conventions_are_exact_mirrors_on_gap_free_data():
+    from modverif.metrics import compute_lagged_correlation, compute_xcorr_best_lag
+
+    for shift in (-7, -2, 0, 3, 8):
+        obs, model = _shifted_pair(shift)
+        best_lag, _, _, _ = compute_xcorr_best_lag(model, obs, 24, min_pairs=10)
+        lags, corrs = compute_lagged_correlation(model, obs, max_lag=24)
+        assert best_lag == -int(lags[int(np.nanargmax(corrs))]), f'mirror broken at shift {shift}'
+
+
+def test_only_the_per_lag_masking_version_keeps_the_lag_axis_in_time():
+    """The reason both exist. compute_lagged_correlation compacts gaps BEFORE lagging, so on a gappy
+    series its lag is counted in surviving samples, not timesteps."""
+    from modverif.metrics import compute_lagged_correlation, compute_xcorr_best_lag
+
+    gen = np.random.default_rng(0)
+    obs, model = _shifted_pair(+5)
+    obs = obs.copy()
+    obs[gen.choice(len(obs), 60, replace=False)] = np.nan   # a heavily gapped gauge
+
+    best_lag, _, _, _ = compute_xcorr_best_lag(model, obs, 24, min_pairs=10)
+    assert best_lag == +5, 'per-lag masking should still recover the true 5-step displacement'
+
+    lags, corrs = compute_lagged_correlation(model, obs, max_lag=24)
+    compacted = -int(lags[int(np.nanargmax(corrs))])
+    assert compacted != 5, (
+        'if the compacted version now agrees, the gap trap documented on it has been fixed and the '
+        'warning in its docstring needs updating')
+
+
+def test_compute_xcorr_best_lag_reports_the_zero_lag_correlation_for_comparison():
+    from modverif.metrics import compute_xcorr_best_lag
+    obs, model = _shifted_pair(+6)
+    best_lag, r_best, r_zero, n = compute_xcorr_best_lag(model, obs, 24, min_pairs=10)
+    assert best_lag == 6
+    assert r_best > r_zero, 'aligning should beat not aligning, and both must be reported'
+    assert n > 200
+
+
+def test_compute_xcorr_best_lag_declines_when_no_lag_has_enough_pairs():
+    from modverif.metrics import compute_xcorr_best_lag
+    obs, model = _shifted_pair(+3, n=40)
+    best_lag, r_best, _, n = compute_xcorr_best_lag(model, obs, 5, min_pairs=1000)
+    assert np.isnan(best_lag) and np.isnan(r_best) and n == 0
+
+
+def test_compute_xcorr_best_lag_skips_zero_variance_overlaps():
+    """A constant slice has no correlation to measure; corrcoef returns NaN with a warning rather
+    than an error, so the guard has to be explicit."""
+    from modverif.metrics import compute_xcorr_best_lag
+    # (both series are constant over the tested window)
+    obs = np.concatenate([np.full(100, 7.0), np.sin(np.arange(100) / 5.0)])
+    model = np.concatenate([np.full(100, 7.0), np.sin(np.arange(100) / 5.0)])
+    best_lag, r_best, _, _ = compute_xcorr_best_lag(model[:100], obs[:100], 5, min_pairs=10)
+    assert np.isnan(best_lag) and np.isnan(r_best), (
+        'an entirely constant pair offers no lag information and must be declined, not scored')
+
+
+# ============================================================ compute_residual_skill_score
+# These exist because the final review found the function had NO direct tests: its only exercise
+# computed the expected value BY CALLING IT, which is circular, and both of its documented design
+# decisions survived mutation.
+def test_residual_skill_score_worked_example():
+    from modverif.metrics import compute_residual_skill_score
+    # rmse([3,4]) = 3.5355..., rmse([6,8]) = 7.0710...  -> 1 - 0.5 = 0.5
+    assert compute_residual_skill_score(np.array([3.0, 4.0]),
+                                        np.array([6.0, 8.0])) == pytest.approx(0.5)
+    assert compute_residual_skill_score(np.array([1.0, 1.0]),
+                                        np.array([1.0, 1.0])) == pytest.approx(0.0)
+    assert compute_residual_skill_score(np.array([2.0, 2.0]),
+                                        np.array([1.0, 1.0])) == pytest.approx(-1.0)
+
+
+def test_residual_skill_score_is_an_rmse_ratio_not_an_mse_ratio():
+    """The two are routinely confused and differ substantially: an MSE ratio of 0.5 is an RMSE ratio
+    of about 0.293."""
+    from modverif.metrics import compute_residual_skill_score
+    resid = np.full(4, 1.0)
+    base = np.full(4, np.sqrt(2.0))          # MSE ratio exactly 0.5
+    assert compute_residual_skill_score(resid, base) == pytest.approx(1 - 1 / np.sqrt(2.0))
+
+
+def test_residual_skill_score_propagates_nan_rather_than_dropping_it():
+    """Strict mean, not nanmean. A NaN residual means the caller's inputs are wrong and must surface,
+    not be silently excluded from the denominator -- mutation testing showed this was undefended."""
+    from modverif.metrics import compute_residual_skill_score
+    assert np.isnan(compute_residual_skill_score(np.array([1.0, np.nan]), np.array([2.0, 2.0])))
+    assert np.isnan(compute_residual_skill_score(np.array([1.0, 1.0]), np.array([2.0, np.nan])))
+
+
+def test_residual_skill_score_declines_on_a_zero_baseline():
+    """A baseline with no error cannot be improved on; the guard is `> 0`, not `>= 0`."""
+    from modverif.metrics import compute_residual_skill_score
+    assert np.isnan(compute_residual_skill_score(np.array([1.0, 1.0]), np.zeros(2)))

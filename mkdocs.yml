@@ -45,7 +45,9 @@ markdown_extensions:
     - pymdownx.tasklist:
         custom_checkbox: true
     - pymdownx.inlinehilite
-    - pymdownx.snippets
+    - pymdownx.snippets:
+        base_path: ['.']
+        check_paths: true
     - pymdownx.superfences
 
 plugins:
@@ -56,7 +58,7 @@ plugins:
                 inventories:
                     - https://docs.python.org/3.11/objects.inv
                 options:
-                    docstring_style: google
+                    docstring_style: numpy
                     show_root_heading: false
                     show_source: false
 
@@ -77,5 +79,11 @@ nav:
         - Verification Plots: guide/verification-plots.md
     - Reference:
         - Metrics: reference/metrics.md
+        - Rolling Windows: reference/window.md
+        - Spatial Structure: reference/spatial.md
+        - Point-to-Grid Matching: reference/match.md
+        - Resampling Inference: reference/stats.md
+        - Out-of-Sample Assessment: reference/crossval.md
         - API: reference/modverif.md
+    - Changelog: changelog.md
     - Development: development.md
