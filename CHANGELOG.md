@@ -9,7 +9,7 @@ on PyPI — a changelog that claims a release which is not installable is worse 
 Entries record *why* a change was made where the reason is not obvious from the name. Anything that
 can change a number a user has already published is called out explicitly.
 
-## [0.4.0] — unreleased
+## [0.4.0] — 2026-08-01
 
 Five new modules of spatial-verification methods, graduated from a private analysis codebase where
 they had been in production use on real storm assessments. **Purely additive**: nothing that shipped
