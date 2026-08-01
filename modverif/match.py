@@ -336,3 +336,140 @@ def null_improvement(
         if np.isfinite(imp):
             out.append(imp)
     return np.array(out)
+
+
+def vector_coherence(dx: np.ndarray, dy: np.ndarray) -> tuple[float, float, float, float]:
+    """
+    Do the offset vectors point the same way? The second selection-bias guard.
+
+    A real displacement makes neighbouring points' offsets align; search luck scatters them
+    uniformly. This reduces that to one number -- the mean resultant length of the bearings, which is
+    1 for perfect alignment and near 0 for random directions -- plus a Rayleigh test of uniformity.
+
+    Use it alongside `null_improvement`. That one prices the *magnitude* of the apparent
+    improvement; this one asks whether the offsets have a coherent *direction*, which a value-search
+    on an unrelated field has no reason to produce.
+
+    Parameters
+    ----------
+    dx, dy : np.ndarray
+        Offset components per point, in a projected metric CRS. Pass only points that actually moved
+        -- zero-length vectors have no bearing, and including them deflates the resultant.
+
+    Returns
+    -------
+    rbar : float
+        Mean resultant length in ``[0, 1]``.
+    p : float
+        Rayleigh p-value against the uniform null, ``exp(-n * rbar**2)``.
+    mean_dx, mean_dy : float
+        Mean offset vector, same units as the inputs.
+
+    Notes
+    -----
+    Bearings are computed in **compass convention** -- ``arctan2(dx, dy)``, so 0 is north and angles
+    increase clockwise. Note that ``rbar`` and ``p`` are **invariant to that choice**: rotating every
+    bearing by a constant leaves the resultant length unchanged, so no convention is recoverable from
+    them. The convention is documented because it governs how to interpret the returned mean offset
+    vector, and because this is deliberately *not* the meteorological wind convention used by
+    `modverif.metrics.compute_wind_direction_bias` -- the two answer different questions.
+    """
+    th = np.arctan2(dx, dy)   # compass-style: 0 = north
+    n = len(th)
+    if n == 0:
+        return np.nan, np.nan, np.nan, np.nan
+    c, s = np.cos(th).sum(), np.sin(th).sum()
+    rbar = float(np.hypot(c, s) / n)
+    p = float(np.exp(-n * rbar ** 2))
+    return rbar, p, float(np.mean(dx)), float(np.mean(dy))
+
+
+def field_shift_objective(
+    field: np.ndarray,
+    gx: np.ndarray,
+    gy: np.ndarray,
+    sx: np.ndarray,
+    sy: np.ndarray,
+    obs: np.ndarray,
+    max_shift_km: float,
+    step_km: float,
+):
+    """
+    One whole-field displacement vector, with the objective surface that produced it.
+
+    Where `neighborhood_match` lets every point find its own best cell -- and can therefore
+    cherry-pick -- this asks a single question of the entire field: which rigid translation makes the
+    model best match *all* the points at once? One number, no per-point freedom, and the surface
+    around the optimum shows whether it is well determined or a broad flat basin.
+
+    The scored point set is **fixed across every candidate shift**: only points whose full
+    ``±max_shift`` box is finite and strictly positive take part. Otherwise shifts that happen to
+    move points onto the footprint would score against a different sample from those that do not,
+    and the comparison would be meaningless.
+
+    Parameters
+    ----------
+    field : np.ndarray
+        Gridded model values, shape ``(len(gy), len(gx))``.
+    gx, gy : np.ndarray
+        Ascending, regularly spaced grid axes in a projected metric CRS.
+    sx, sy : np.ndarray
+        Point coordinates in the same CRS.
+    obs : np.ndarray
+        Observed value per point; only strictly positive values participate (the objective is a
+        log-ratio).
+    max_shift_km : float
+        Half-width of the shift search, km.
+    step_km : float
+        Shift increment, km; rounded to at least one grid cell.
+
+    Returns
+    -------
+    offsets_km : np.ndarray or None
+        Shift values along each axis, km. None if fewer than
+        `MIN_GAUGES_FOR_IMPROVEMENT` points survived the fixed-sample rule.
+    objective : np.ndarray or None
+        ``J[a, b]`` = mean squared log-ratio at shift ``(dx=offsets[b], dy=offsets[a])`` -- **rows are
+        northing, columns are easting**. None when ``offsets_km`` is None.
+    used : np.ndarray
+        Boolean mask of the points that were scored, returned even on the None path so a caller can
+        report *why* it declined.
+
+    Notes
+    -----
+    **Sign convention.** A positive optimum ``(u, v)`` means the model values that match the
+    observations sit at ``point + (u, v)`` -- i.e. the field is displaced **by** ``+(u, v)``.
+    Correcting it means shifting the field by ``-(u, v)``. Getting this backwards inverts every
+    conclusion drawn from it, so it is stated here and in the returned array's axis order.
+    """
+    res = float(gx[1] - gx[0])
+    if res <= 0 or gy[1] - gy[0] <= 0:
+        # A descending axis is silently catastrophic here rather than merely wrong: nearest_indices
+        # still works (the negative spacing cancels), so the function runs to completion and returns
+        # a plausible surface with the north/south sign INVERTED -- exactly the conclusion-flipping
+        # failure the Notes below warn about. Refuse instead.
+        raise ValueError('gx and gy must be ascending; a descending axis silently inverts the '
+                         'displacement sign')
+    s = int(round(max_shift_km * 1000.0 / res))
+    step = max(1, int(round(step_km * 1000.0 / res)))
+    jx = nearest_indices(gx, sx)
+    jy = nearest_indices(gy, sy)
+    used = (obs > 0) & (jx >= s) & (jx < len(gx) - s) & (jy >= s) & (jy < len(gy) - s)
+    for i in np.where(used)[0]:
+        box = field[jy[i] - s:jy[i] + s + 1, jx[i] - s:jx[i] + s + 1]
+        if not (np.isfinite(box).all() and (box > 0).all()):
+            used[i] = False
+    if used.sum() < MIN_GAUGES_FOR_IMPROVEMENT:
+        return None, None, used
+    # Built outward from 0 so the no-displacement hypothesis is ALWAYS scored. A plain
+    # arange(-s, s+1, step) omits zero whenever step does not divide s -- the one shift a
+    # displacement study must never fail to evaluate.
+    half = np.arange(step, s + 1, step)
+    offs = np.concatenate([-half[::-1], [0], half])
+    objective = np.full((len(offs), len(offs)), np.nan)
+    lo = np.log(obs[used])
+    for a, v in enumerate(offs):       # rows: dy (north)
+        for b, u in enumerate(offs):   # cols: dx (east)
+            vals = field[jy[used] + v, jx[used] + u]
+            objective[a, b] = float(np.mean((np.log(vals) - lo) ** 2))
+    return offs * res / 1000.0, objective, used

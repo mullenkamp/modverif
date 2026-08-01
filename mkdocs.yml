@@ -45,7 +45,9 @@ markdown_extensions:
     - pymdownx.tasklist:
         custom_checkbox: true
     - pymdownx.inlinehilite
-    - pymdownx.snippets
+    - pymdownx.snippets:
+        base_path: ['.']
+        check_paths: true
     - pymdownx.superfences
 
 plugins:
@@ -83,4 +85,5 @@ nav:
         - Resampling Inference: reference/stats.md
         - Out-of-Sample Assessment: reference/crossval.md
         - API: reference/modverif.md
+    - Changelog: changelog.md
     - Development: development.md

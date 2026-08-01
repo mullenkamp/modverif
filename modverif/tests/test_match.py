@@ -18,11 +18,13 @@ import pytest
 from modverif.match import (
     MIN_GAUGES_FOR_IMPROVEMENT,
     best_match_locate,
+    field_shift_objective,
     grid_best_match,
     logvar_improvement,
     nearest_indices,
     neighborhood_match,
     null_improvement,
+    vector_coherence,
 )
 
 
@@ -260,3 +262,113 @@ def test_grid_best_match_marks_off_footprint_points():
     pt, bm = grid_best_match(field, gx, gy, sx, sy, np.array([50.0, 50.0]), 2000.0)
     assert np.isnan(pt[0]) and np.isnan(bm[0])
     assert pt[1] == pytest.approx(50.0) and bm[1] == pytest.approx(50.0)
+
+
+# ---------------------------------------------------------------- displacement (the other guards)
+def test_vector_coherence_separates_aligned_from_random_offsets():
+    aligned_dx, aligned_dy = np.full(40, 3.0), np.full(40, 4.0)
+    rbar, p, mdx, mdy = vector_coherence(aligned_dx, aligned_dy)
+    assert rbar == pytest.approx(1.0), 'identical bearings must give a resultant of 1'
+    assert p < 1e-6
+    assert (mdx, mdy) == pytest.approx((3.0, 4.0))
+
+    gen = np.random.default_rng(0)
+    th = gen.uniform(0, 2 * np.pi, 400)
+    r_rand, p_rand, _, _ = vector_coherence(np.sin(th), np.cos(th))
+    assert r_rand < 0.2, 'random bearings should barely resolve'
+    assert p_rand > 0.05
+
+
+def test_vector_coherence_resultant_length_arithmetic():
+    """NB: this does NOT pin the bearing convention, and cannot.
+
+    Mutation testing showed that replacing arctan2(dx, dy) with arctan2(-dx, -dy) changes the result
+    by one ULP -- rotating every bearing by a constant leaves the resultant length unchanged. The
+    convention is unobservable from rbar and p, which is now stated in the docstring rather than
+    implied to matter.
+    """
+    # Due north: dx=0, dy=1. Due east: dx=1, dy=0. Both are single directions -> rbar 1.
+    assert vector_coherence(np.array([0.0]), np.array([1.0]))[0] == pytest.approx(1.0)
+    # Two vectors 90 degrees apart average to a resultant of 1/sqrt(2).
+    rbar, _, _, _ = vector_coherence(np.array([0.0, 1.0]), np.array([1.0, 0.0]))
+    assert rbar == pytest.approx(1 / np.sqrt(2))
+
+
+def test_vector_coherence_on_no_vectors():
+    assert all(np.isnan(v) for v in vector_coherence(np.array([]), np.array([])))
+
+
+def test_field_shift_objective_recovers_a_known_displacement():
+    """A field shifted by a known amount must put the objective's minimum at that shift."""
+    gx, gy = np.arange(160) * 1000.0, np.arange(140) * 1000.0
+    yy, xx = np.mgrid[0:140, 0:160]
+    truth = 50.0 + 40.0 * np.exp(-(((xx - 80) / 25.0) ** 2 + ((yy - 70) / 25.0) ** 2))
+    shifted = np.roll(np.roll(truth, 5, axis=1), 3, axis=0)   # model displaced +5 east, +3 north
+
+    gen = np.random.default_rng(1)
+    idx = gen.integers(40, 110, (30, 2))
+    sx, sy = gx[idx[:, 0]], gy[idx[:, 1]]
+    obs = truth[idx[:, 1], idx[:, 0]]
+
+    offs, objective, used = field_shift_objective(shifted, gx, gy, sx, sy, obs, 12.0, 1.0)
+    assert offs is not None and used.sum() >= 8
+    a, b = np.unravel_index(int(np.nanargmin(objective)), objective.shape)
+    assert offs[b] == pytest.approx(5.0), 'east shift not recovered (columns are easting)'
+    assert offs[a] == pytest.approx(3.0), 'north shift not recovered (rows are northing)'
+
+
+def test_field_shift_objective_scores_the_same_points_at_every_shift():
+    """The fixed-sample rule. Without it, shifts that move points onto the footprint would be scored
+    against a different sample from those that do not."""
+    gx, gy = np.arange(80) * 1000.0, np.arange(80) * 1000.0
+    field = np.full((80, 80), 50.0)
+    field[:, :30] = np.nan                       # a large off-footprint region
+    gen = np.random.default_rng(2)
+    sx = gen.uniform(gx[10], gx[-11], 40)
+    sy = gen.uniform(gy[10], gy[-11], 40)
+    obs = np.full(40, 50.0)
+    offs, objective, used = field_shift_objective(field, gx, gy, sx, sy, obs, 5.0, 1.0)
+    assert offs is not None
+    assert np.isfinite(objective).all(), 'every shift must score, having used one fixed sample'
+    assert not used.all(), 'points near the NaN region should have been excluded'
+
+
+def test_field_shift_objective_declines_with_too_few_usable_points():
+    gx, gy = np.arange(60) * 1000.0, np.arange(60) * 1000.0
+    field = np.full((60, 60), np.nan)
+    offs, objective, used = field_shift_objective(
+        field, gx, gy, np.array([30_000.0]), np.array([30_000.0]), np.array([10.0]), 5.0, 1.0)
+    assert offs is None and objective is None
+    assert used.shape == (1,), 'the mask is returned even on the decline path, to explain why'
+
+
+def test_field_shift_objective_always_scores_the_zero_shift():
+    """The no-displacement hypothesis must never be missing from the surface.
+
+    A plain arange(-s, s+1, step) silently omits zero whenever the step does not divide the maximum
+    shift -- so the one candidate a displacement study must always evaluate could be absent.
+    """
+    gx, gy = np.arange(120) * 1000.0, np.arange(120) * 1000.0
+    field = np.full((120, 120), 50.0)
+    gen = np.random.default_rng(9)
+    sx = gen.uniform(gx[20], gx[-21], 30)
+    sy = gen.uniform(gy[20], gy[-21], 30)
+    obs = np.full(30, 50.0)
+    for max_shift, step in [(5.0, 2.0), (10.0, 3.0), (7.0, 4.0), (10.0, 1.0)]:
+        offs, _, _ = field_shift_objective(field, gx, gy, sx, sy, obs, max_shift, step)
+        assert offs is not None
+        assert 0.0 in offs, f'zero shift missing for max_shift={max_shift}, step={step}'
+        np.testing.assert_allclose(offs, -offs[::-1], err_msg='offsets should be symmetric about 0')
+
+
+def test_field_shift_objective_refuses_a_descending_axis():
+    """Descending axes are silently catastrophic, not merely wrong: nearest_indices still works, so
+    the function would return a plausible surface with the north/south sign inverted."""
+    gx, gy = np.arange(60) * 1000.0, np.arange(60) * 1000.0
+    field = np.full((60, 60), 50.0)
+    args = (field, gx, gy[::-1], np.array([30_000.0]), np.array([30_000.0]), np.array([50.0]), 5.0, 1.0)
+    with pytest.raises(ValueError, match='ascending'):
+        field_shift_objective(*args)
+    with pytest.raises(ValueError, match='ascending'):
+        field_shift_objective(field, gx[::-1], gy, np.array([30_000.0]), np.array([30_000.0]),
+                              np.array([50.0]), 5.0, 1.0)

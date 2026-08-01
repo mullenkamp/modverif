@@ -30,8 +30,10 @@ from modverif.spatial import (
     fit_exponential_variogram,
     matheron_gamma,
     morans_i,
+    morans_i_at_points,
     morans_i_permutation,
 )
+from modverif.stats import permutation_pvalue
 
 
 def correlated_field(n=180, rng_km=60.0, psill=1.0, nugget=0.05, seed=0):
@@ -127,7 +129,7 @@ def test_fit_recovers_a_known_range():
     x, y, z = correlated_field(rng_km=60.0, seed=3)
     out = fit_bias_variogram(x, y, z)
     assert out['fit_ok']
-    assert 20.0 < out['range_km'] < 180.0, f'range {out["rng"]:.1f} km is not in the plausible band'
+    assert 20.0 < out['range_km'] < 180.0, f'range {out["range_km"]:.1f} km is not in the plausible band'
     assert out['sill'] == pytest.approx(out['nugget'] + out['psill'])
 
 
@@ -374,3 +376,49 @@ def test_best_kmeans_draws_its_restart_seeds_in_one_vectorised_call():
     spy = _PermutationCounter(2)
     best_kmeans(xy, 3, spy, n_restart=20)
     assert spy.n_integers == 1, f'expected a single vectorised integers() call, got {spy.n_integers}'
+
+
+def test_morans_i_at_points_agrees_with_the_low_level_pair():
+    """The convenience wrapper must be a wrapper, not a second implementation.
+
+    It exists because the raw-ingredients API was easier to re-implement than to call -- so the one
+    thing it must never become is a third copy that drifts.
+    """
+    gen = np.random.default_rng(20)
+    x, y = gen.uniform(0, 200, 45), gen.uniform(0, 200, 45)
+    v = gen.normal(size=45)
+
+    got_i, got_p = morans_i_at_points(v, x, y, np.random.default_rng(3), n_perm=199)
+
+    d = np.hypot(x[:, None] - x[None, :], y[:, None] - y[None, :])
+    with np.errstate(divide='ignore'):
+        w = np.where(d > 0, 1.0 / d, 0.0)
+    s0, zc = float(w.sum()), v - v.mean()
+    (exp_i,), null = morans_i_permutation(zc, [(w, s0)], 45, float(zc @ zc),
+                                          np.random.default_rng(3), 199)
+    assert got_i == exp_i
+    assert got_p == permutation_pvalue(exp_i, null[:, 0])
+
+
+def test_morans_i_at_points_declines_on_too_few_points():
+    gen = np.random.default_rng(21)
+    assert all(np.isnan(v) for v in
+               morans_i_at_points(gen.normal(size=5), gen.uniform(0, 10, 5),
+                                  gen.uniform(0, 10, 5), np.random.default_rng(0)))
+
+
+def test_morans_i_at_points_detects_a_clustered_field():
+    gen = np.random.default_rng(22)
+    x = np.concatenate([gen.uniform(0, 30, 30), gen.uniform(170, 200, 30)])
+    y = gen.uniform(0, 200, 60)
+    v = np.concatenate([np.full(30, 1.0), np.full(30, -1.0)]) + gen.normal(0, 0.1, 60)
+    i, p = morans_i_at_points(v, x, y, np.random.default_rng(4), n_perm=499)
+    assert i > 0 and p < 0.05, 'two separated blocks of opposite sign should read as clustered'
+
+
+def test_morans_i_at_points_declines_on_a_constant_field():
+    """Zero variance means Moran's I is 0/0. The guard must return NaN rather than divide."""
+    gen = np.random.default_rng(23)
+    x, y = gen.uniform(0, 100, 30), gen.uniform(0, 100, 30)
+    assert all(np.isnan(v) for v in
+               morans_i_at_points(np.full(30, 4.0), x, y, np.random.default_rng(0), n_perm=99))

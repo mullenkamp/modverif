@@ -19,6 +19,8 @@ from scipy.cluster.vq import kmeans2
 from scipy.optimize import curve_fit
 from scipy.spatial.distance import pdist
 
+from modverif.stats import permutation_pvalue
+
 # Bins with fewer pairs than this are dropped: a semivariance estimated from a handful of pairs is
 # noise, and a noisy near-origin bin distorts the whole fit.
 MIN_PAIRS_PER_BIN = 30
@@ -417,6 +419,61 @@ def morans_i_permutation(
     return observed, null
 
 
+
+def morans_i_at_points(
+    values: np.ndarray,
+    x: np.ndarray,
+    y: np.ndarray,
+    rng: np.random.Generator,
+    n_perm: int = 999,
+    min_points: int = 8,
+) -> tuple[float, float]:
+    """
+    Moran's I and its permutation p-value for scattered points, with inverse-distance weights.
+
+    The convenience layer over `morans_i` and `morans_i_permutation`, which take pre-computed weight
+    matrices and invariants because callers evaluating many bands or many permutations should not
+    recompute them. That is the right shape for a hot loop and the wrong shape for the common case:
+    "is this scattered field spatially clustered?"
+
+    This exists because the low-level pair was, in practice, easier to re-implement than to call --
+    which is a design smell worth fixing rather than documenting.
+
+    Parameters
+    ----------
+    values : np.ndarray
+        Field value per point.
+    x, y : np.ndarray
+        Point coordinates in a projected metric CRS. Units set the weight scale; only relative
+        distances matter.
+    rng : np.random.Generator
+        Caller's generator, consumed once per permutation.
+    n_perm : int
+        Permutations for the null.
+    min_points : int
+        Below this, ``(NaN, NaN)`` is returned rather than a number -- Moran's I on a handful of
+        points is dominated by the weight matrix's geometry, not the field.
+
+    Returns
+    -------
+    morans_i : float
+        Observed statistic. Its null expectation is ``-1 / (n - 1)``, not zero.
+    p_value : float
+        One-sided permutation p-value for positive autocorrelation.
+    """
+    n = len(values)
+    if n < min_points:
+        return np.nan, np.nan
+    d = np.hypot(x[:, None] - x[None, :], y[:, None] - y[None, :])
+    with np.errstate(divide='ignore'):
+        weights = np.where(d > 0, 1.0 / d, 0.0)
+    s0 = float(weights.sum())
+    zc = values - values.mean()
+    denom = float(zc @ zc)
+    if denom <= 0 or s0 <= 0:
+        return np.nan, np.nan
+    (observed,), null = morans_i_permutation(zc, [(weights, s0)], n, denom, rng, n_perm)
+    return observed, permutation_pvalue(observed, null[:, 0])
 # ------------------------------------------------------------------------------------ regionalisation
 # (the out-of-sample PREDICTORS that consume these groupings live in modverif.crossval --
 #  neither of them uses coordinates, so neither belongs in a spatial-structure module)

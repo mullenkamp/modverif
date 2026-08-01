@@ -328,6 +328,13 @@ def compute_lagged_correlation(
 
     A positive optimal lag means the model leads (event arrives early);
     a negative optimal lag means the model lags (event arrives late).
+    See `compute_xcorr_best_lag`, whose convention is the OPPOSITE of this one.
+
+    **WARNING:** non-finite pairs are dropped **before** lagging, so the series are compacted and
+    the lag is counted in surviving-sample steps rather than in time. On a gappy series -- an
+    interrupted rain gauge, say -- the returned "lag" is therefore not a lag in hours. For
+    displaced-timing work on gappy observations use `compute_xcorr_best_lag`, which re-masks per lag
+    and so keeps the lag axis in real time.
 
     Parameters
     ----------
@@ -375,6 +382,92 @@ def compute_lagged_correlation(
 
     return lags, correlations
 
+
+
+def compute_xcorr_best_lag(
+    model: np.ndarray,
+    obs: np.ndarray,
+    max_lag: int,
+    min_pairs: int = 48,
+) -> Tuple[float, float, float, int]:
+    """
+    Best-correlating lag between an observation series and a model series, masked per lag.
+
+    Sits beside `compute_lagged_correlation` deliberately, because the two compute the same physical
+    quantity and disagree about its sign. Keeping them apart would let a reader use either without
+    noticing.
+
+    **WARNING: the sign convention here is the OPPOSITE of** `compute_lagged_correlation`.
+
+    * Here: a **positive** lag means the **model is later** than the observations -- matching a
+      ``model_start - obs_start`` timing difference, which is how a displacement is usually reported.
+    * There: a positive lag means the **model leads**.
+
+    Neither is wrong; they were written for different questions. Do not "fix" one to match the other
+    -- published results depend on both.
+
+    Because of that, **swapping the two series is invisible**: it returns the negated lag with a
+    bitwise-identical correlation, and no output reveals the mistake. The argument order here is
+    therefore ``(model, obs)``, matching every other function in this module, so habit gives the
+    right answer.
+
+    Differs from `compute_lagged_correlation` in one other way that matters more than it looks: the
+    finite mask is recomputed **at each lag** rather than once up front. Dropping non-finite pairs
+    before lagging compacts the series, so the lag axis stops being time. Re-masking keeps it honest
+    on gappy observations, at the cost of comparing slightly different samples across lags -- which
+    is why ``min_pairs`` exists.
+
+    Parameters
+    ----------
+    obs : np.ndarray
+        Observation series, evenly spaced in time. Non-finite entries mark gaps.
+    model : np.ndarray
+        Model series on the same time axis.
+    max_lag : int
+        Largest lag to test, in timesteps, in both directions.
+    min_pairs : int
+        A lag is skipped unless this many finite pairs overlap. Guards against a lag winning on a
+        handful of coincidentally-agreeing points at the edge of the overlap.
+
+    Returns
+    -------
+    best_lag : float
+        Lag with the highest correlation -- integer-valued, but typed float because it is **NaN** when
+        no lag had enough pairs. Exact ties resolve to the
+        **most negative** lag, since the scan runs from ``-max_lag`` upward -- relevant for periodic
+        series where ``max_lag`` reaches a full period.
+    r_best : float
+        Correlation at that lag.
+    r_zero : float
+        Correlation at zero lag, for comparison -- how much the alignment actually bought.
+    n_pairs : int
+        Finite pairs contributing at the best lag.
+    """
+    n = len(obs)
+    if len(model) != n:
+        raise ValueError(f'model and obs must be the same length, got {len(model)} and {n}')
+    if max_lag >= n:
+        raise ValueError(f'max_lag ({max_lag}) must be shorter than the series ({n}); a lag at or '
+                         f'beyond the series length leaves no overlap to correlate')
+    best = (np.nan, np.nan, np.nan, 0)
+    r_zero = np.nan
+    for lag in range(-max_lag, max_lag + 1):
+        if lag >= 0:
+            o, w = obs[:n - lag] if lag else obs, model[lag:]
+        else:
+            o, w = obs[-lag:], model[:n + lag]
+        m = np.isfinite(o) & np.isfinite(w)
+        if m.sum() < min_pairs:
+            continue
+        oo, ww = o[m], w[m]
+        if oo.std() == 0 or ww.std() == 0:
+            continue
+        r = float(np.corrcoef(oo, ww)[0, 1])
+        if lag == 0:
+            r_zero = r
+        if not np.isfinite(best[1]) or r > best[1]:
+            best = (lag, r, r_zero, int(m.sum()))
+    return best[0], best[1], r_zero, best[3]
 
 ##################################################
 ### Domain-aggregated metric functions
