@@ -38,6 +38,8 @@ dev = [
   "ruff",
   "pytest",
   "pytest-cov",
+  # Second route for modverif.flow.pettitt (tests only; MIT).
+  "pyhomogeneity",
 ]
 
 
