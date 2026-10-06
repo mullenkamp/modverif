@@ -9,6 +9,34 @@ on PyPI — a changelog that claims a release which is not installable is worse 
 Entries record *why* a change was made where the reason is not obvious from the name. Anything that
 can change a number a user has already published is called out explicitly.
 
+## [0.6.0] — unreleased
+
+River-flow skill scores, built for thalweg's stage-comparison gate. **Purely additive.**
+
+### Added
+
+- **`modverif.flowskill`:**
+  - **KGE′** (Kling, Fuchs and Paulin 2012), with its components. It uses the CV ratio, not the σ ratio of the
+    2009 KGE.
+  - **A low-flow score:** r and α on log(Q + ε), with α = σ_sim/σ_obs, because a CV of log flows depends on
+    the flow unit. Plus **β_low**, the ratio of the sums of the lowest 30 % of each series, each sorted on its
+    own.
+  - **ε,** the calibration half's observed mean divided by 100, fixed so that per-year bootstrap statistics
+    stay exact.
+  - **A 31-day day-of-year climatology benchmark,** wrapping at the year end, with 29 February pooled with the
+    28th.
+  - Inputs are the scored hours only. NaN, a negative flow, a length mismatch or a constant observed series
+    raises. A constant is detected exactly (max equals min), never by a small standard deviation.
+
+## [0.5.0] — 2026-10-02
+
+### Added
+
+- **`modverif.flow`:** water years, calendar-based coverage, annual volumes, the implied precipitation
+  multiplier, Pettitt step tests with permutation p-values, a regional common-step test, and a pre-registered
+  green, amber and red verdict, for thalweg's step-0 water-balance gate. Coverage is measured against the
+  calendar, never against the timestamps supplied.
+
 ## [0.4.0] — 2026-08-01
 
 Five new modules of spatial-verification methods, graduated from a private analysis codebase where

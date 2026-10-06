@@ -84,6 +84,8 @@ nav:
         - Point-to-Grid Matching: reference/match.md
         - Resampling Inference: reference/stats.md
         - Out-of-Sample Assessment: reference/crossval.md
+        - Water-Balance Checks: reference/flow.md
+        - Flow Skill Scores: reference/flowskill.md
         - API: reference/modverif.md
     - Changelog: changelog.md
     - Development: development.md
