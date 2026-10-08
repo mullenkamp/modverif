@@ -9,7 +9,7 @@ on PyPI — a changelog that claims a release which is not installable is worse 
 Entries record *why* a change was made where the reason is not obvious from the name. Anything that
 can change a number a user has already published is called out explicitly.
 
-## [0.6.0] — unreleased
+## [0.6.0] — 2026-10-06
 
 River-flow skill scores, built for thalweg's stage-comparison gate. **Purely additive.**
 
